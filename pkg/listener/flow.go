@@ -68,6 +68,8 @@ func NewFlowListener(cfg config.ListenerConfig) *FlowListener {
 		ExcludeFields:       cfg.ExcludeFields,
 		HomeNets:            homeNets,
 		SpanPort:            cfg.SpanPort,
+		ApplicationsFile:    cfg.ApplicationsFile,
+		HostsPath:           cfg.HostsPath,
 	}
 
 	return &FlowListener{

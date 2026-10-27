@@ -3,6 +3,7 @@ package flow
 import (
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -117,9 +118,10 @@ func ParseIPFIX(data []byte, exporterIP string, cache *TemplateCache, cfg *Parse
 
 				if cache != nil {
 					cache.Set(exporterIP, domainID, templateID, Template{
-						TemplateID: templateID,
-						Fields:     fields,
-						LastSeen:   time.Now(),
+						TemplateID:       templateID,
+						Fields:           fields,
+						LastSeen:         time.Now(),
+						IsOptionTemplate: true,
 					})
 				}
 			}
@@ -131,6 +133,83 @@ func ParseIPFIX(data []byte, exporterIP string, cache *TemplateCache, cfg *Parse
 			}
 			tmpl, ok := cache.Get(exporterIP, domainID, setID)
 			if !ok {
+				continue
+			}
+
+			if tmpl.IsOptionTemplate {
+				// Process Option Data Set: learn metadata mappings without emitting traffic records
+				dataOffset := 0
+				for dataOffset < len(setData) {
+					var appID uint64
+					var appName string
+					var ifIndex uint32
+					var ifName string
+					hasAppID := false
+					hasIfIndex := false
+					recordValid := true
+					startOffset := dataOffset
+
+					for _, f := range tmpl.Fields {
+						var val []byte
+						if f.Length == 0xFFFF {
+							if dataOffset >= len(setData) {
+								recordValid = false
+								break
+							}
+							varLen := int(setData[dataOffset])
+							dataOffset++
+							if varLen == 255 {
+								if dataOffset+2 > len(setData) {
+									recordValid = false
+									break
+								}
+								varLen = int(binary.BigEndian.Uint16(setData[dataOffset : dataOffset+2]))
+								dataOffset += 2
+							}
+							if dataOffset+varLen > len(setData) {
+								recordValid = false
+								break
+							}
+							val = setData[dataOffset : dataOffset+varLen]
+							dataOffset += varLen
+						} else {
+							fLen := int(f.Length)
+							if dataOffset+fLen > len(setData) {
+								recordValid = false
+								break
+							}
+							val = setData[dataOffset : dataOffset+fLen]
+							dataOffset += fLen
+						}
+
+						switch f.TypeID {
+						case IE_APPLICATION_ID:
+							appID = decodeUint(val)
+							hasAppID = true
+						case IE_APPLICATION_NAME:
+							appName = strings.TrimRight(string(val), "\x00")
+						case IE_INGRESS_INTERFACE, IE_EGRESS_INTERFACE:
+							ifIndex = uint32(decodeUint(val))
+							hasIfIndex = true
+						case IE_IF_NAME, IE_IF_DESCRIPTION:
+							ifName = strings.TrimRight(string(val), "\x00")
+						}
+					}
+
+					if !recordValid || dataOffset == startOffset {
+						break
+					}
+
+					if hasAppID && appName != "" {
+						cache.SetAppName(exporterIP, domainID, appID, appName)
+						if appID > 0xFFFFFFFF {
+							cache.SetAppName(exporterIP, domainID, uint64(uint32(appID)), appName)
+						}
+					}
+					if hasIfIndex && ifName != "" {
+						cache.SetIfName(exporterIP, domainID, ifIndex, ifName)
+					}
+				}
 				continue
 			}
 
@@ -190,7 +269,7 @@ func ParseIPFIX(data []byte, exporterIP string, cache *TemplateCache, cfg *Parse
 						dataOffset += fLen
 					}
 
-					applyFieldToRecord(rec, f, val, spanPort)
+					applyFieldToRecord(rec, f, val, spanPort, cache)
 				}
 
 				if !recordValid {

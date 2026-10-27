@@ -41,6 +41,8 @@ const (
 	IE_FLOW_DIRECTION             = 61
 	IE_DESTINATION_MAC_ADDRESS    = 80
 	IE_POST_SOURCE_MAC            = 81 // Post-source MAC address
+	IE_IF_NAME                    = 82
+	IE_IF_DESCRIPTION             = 83
 	IE_HTTP_HOST_NAME_V9          = 87
 	IE_APPLICATION_ID             = 95
 	IE_APPLICATION_NAME           = 96
@@ -145,15 +147,33 @@ func isPrintableASCII(b []byte) bool {
 }
 
 func decodeAppID(val []byte) (string, string) {
-	if len(val) == 4 {
+	switch len(val) {
+	case 4:
 		engineID := fmt.Sprintf("%d", val[0])
 		appID := uint32(val[1])<<16 | uint32(val[2])<<8 | uint32(val[3])
 		return engineID, fmt.Sprintf("%s:%d", engineID, appID)
+	case 8:
+		pen := binary.BigEndian.Uint32(val[0:4])
+		appID := binary.BigEndian.Uint32(val[4:8])
+		if pen != 0 {
+			engineID := fmt.Sprintf("%d", pen)
+			return engineID, fmt.Sprintf("%s:%d", engineID, appID)
+		}
+		return "", fmt.Sprintf("%d", appID)
+	case 6:
+		pen := uint32(binary.BigEndian.Uint16(val[0:2]))
+		appID := binary.BigEndian.Uint32(val[2:6])
+		if pen != 0 {
+			engineID := fmt.Sprintf("%d", pen)
+			return engineID, fmt.Sprintf("%s:%d", engineID, appID)
+		}
+		return "", fmt.Sprintf("%d", appID)
+	default:
+		return "", fmt.Sprintf("%d", decodeUint(val))
 	}
-	return "", fmt.Sprintf("%d", decodeUint(val))
 }
 
-func applyFieldToRecord(rec *JSONFlowRecord, spec FieldSpec, val []byte, spanPort bool) {
+func applyFieldToRecord(rec *JSONFlowRecord, spec FieldSpec, val []byte, spanPort bool, cache *TemplateCache) {
 	if spec.EnterpriseNumber == 0 {
 		switch spec.TypeID {
 		case IE_SOURCE_IPV4_ADDRESS, IE_SOURCE_IPV6_ADDRESS:
@@ -175,10 +195,28 @@ func applyFieldToRecord(rec *JSONFlowRecord, spec FieldSpec, val []byte, spanPor
 		case IE_INGRESS_INTERFACE:
 			rec.LanInterface = uint32(decodeUint(val))
 			rec.LanInterfaceName = fmt.Sprintf("%d", rec.LanInterface)
+			if cache != nil {
+				domainID := uint32(0)
+				if rec.ObservationDomainID != nil {
+					domainID = *rec.ObservationDomainID
+				}
+				if ifName, ok := cache.GetIfName(rec.SensorIP, domainID, rec.LanInterface); ok && ifName != "" {
+					rec.LanInterfaceName = ifName
+				}
+			}
 			rec.LanInterfaceDescription = rec.LanInterfaceName
 		case IE_EGRESS_INTERFACE:
 			rec.WanInterface = uint32(decodeUint(val))
 			rec.WanInterfaceName = fmt.Sprintf("%d", rec.WanInterface)
+			if cache != nil {
+				domainID := uint32(0)
+				if rec.ObservationDomainID != nil {
+					domainID = *rec.ObservationDomainID
+				}
+				if ifName, ok := cache.GetIfName(rec.SensorIP, domainID, rec.WanInterface); ok && ifName != "" {
+					rec.WanInterfaceName = ifName
+				}
+			}
 			rec.WanInterfaceDescription = rec.WanInterfaceName
 		case IE_FLOW_DIRECTION:
 			d := decodeUint(val)
@@ -260,9 +298,34 @@ func applyFieldToRecord(rec *JSONFlowRecord, spec FieldSpec, val []byte, spanPor
 			rec.ApplicationIDName = app
 			rec.ApplicationID = app
 			rec.ApplicationName = app
+
+			// Check if we have a learned application name in cache or dictionary
+			if cache != nil {
+				domainID := uint32(0)
+				if rec.ObservationDomainID != nil {
+					domainID = *rec.ObservationDomainID
+				}
+				rawID := decodeUint(val)
+				if name, ok := cache.GetAppName(rec.SensorIP, domainID, rawID); ok && name != "" {
+					rec.ApplicationName = name
+					rec.ApplicationIDName = name
+				} else if len(val) == 8 {
+					appID32 := uint64(binary.BigEndian.Uint32(val[4:8]))
+					if name, ok := cache.GetAppName(rec.SensorIP, domainID, appID32); ok && name != "" {
+						rec.ApplicationName = name
+						rec.ApplicationIDName = name
+					}
+				} else if len(val) == 4 {
+					appID24 := uint64(uint32(val[1])<<16 | uint32(val[2])<<8 | uint32(val[3]))
+					if name, ok := cache.GetAppName(rec.SensorIP, domainID, appID24); ok && name != "" {
+						rec.ApplicationName = name
+						rec.ApplicationIDName = name
+					}
+				}
+			}
 		case IE_APPLICATION_NAME, IE_REDBORDER_APP_PROTOCOL:
 			if isPrintableASCII(val) {
-				rec.ApplicationName = string(val)
+				rec.ApplicationName = strings.TrimRight(string(val), "\x00")
 			} else if len(val) == 4 {
 				eng, app := decodeAppID(val)
 				if eng != "" {

@@ -8,6 +8,8 @@
   "stats_port": 7979,
   "allowed_ips": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
   "home_nets": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
+  "hosts_path": "/etc/objects",
+  "applications_file": "/etc/objects/applications",
   "listeners": [
     {
       "name": "netflow-collector",

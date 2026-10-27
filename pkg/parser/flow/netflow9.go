@@ -3,6 +3,7 @@ package flow
 import (
 	"encoding/binary"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -91,9 +92,10 @@ func ParseNetFlowV9(data []byte, exporterIP string, cache *TemplateCache, cfg *P
 					}
 					if cache != nil {
 						cache.Set(exporterIP, sourceID, templateID, Template{
-							TemplateID: templateID,
-							Fields:     fields,
-							LastSeen:   time.Now(),
+							TemplateID:       templateID,
+							Fields:           fields,
+							LastSeen:         time.Now(),
+							IsOptionTemplate: true,
 						})
 					}
 				}
@@ -116,6 +118,56 @@ func ParseNetFlowV9(data []byte, exporterIP string, cache *TemplateCache, cfg *P
 				recordLen += int(f.Length)
 			}
 			if recordLen <= 0 {
+				continue
+			}
+
+			if tmpl.IsOptionTemplate {
+				// Process Option Data FlowSet: learn metadata mappings without emitting traffic records
+				dataOffset := 0
+				for dataOffset+recordLen <= len(flowSetData) {
+					recBytes := flowSetData[dataOffset : dataOffset+recordLen]
+					dataOffset += recordLen
+
+					var appID uint64
+					var appName string
+					var ifIndex uint32
+					var ifName string
+					hasAppID := false
+					hasIfIndex := false
+
+					fieldOffset := 0
+					for _, f := range tmpl.Fields {
+						fLen := int(f.Length)
+						if fieldOffset+fLen > len(recBytes) {
+							break
+						}
+						val := recBytes[fieldOffset : fieldOffset+fLen]
+						fieldOffset += fLen
+
+						switch f.TypeID {
+						case IE_APPLICATION_ID:
+							appID = decodeUint(val)
+							hasAppID = true
+						case IE_APPLICATION_NAME:
+							appName = strings.TrimRight(string(val), "\x00")
+						case IE_INGRESS_INTERFACE, IE_EGRESS_INTERFACE:
+							ifIndex = uint32(decodeUint(val))
+							hasIfIndex = true
+						case IE_IF_NAME, IE_IF_DESCRIPTION:
+							ifName = strings.TrimRight(string(val), "\x00")
+						}
+					}
+
+					if hasAppID && appName != "" {
+						cache.SetAppName(exporterIP, sourceID, appID, appName)
+						if appID > 0xFFFFFFFF {
+							cache.SetAppName(exporterIP, sourceID, uint64(uint32(appID)), appName)
+						}
+					}
+					if hasIfIndex && ifName != "" {
+						cache.SetIfName(exporterIP, sourceID, ifIndex, ifName)
+					}
+				}
 				continue
 			}
 
@@ -143,7 +195,7 @@ func ParseNetFlowV9(data []byte, exporterIP string, cache *TemplateCache, cfg *P
 					fLen := int(f.Length)
 					val := recBytes[fieldOffset : fieldOffset+fLen]
 					fieldOffset += fLen
-					applyFieldToRecord(rec, f, val, spanPort)
+					applyFieldToRecord(rec, f, val, spanPort, cache)
 				}
 
 				if rec.StartTime == 0 && rec.EndTime == 0 {

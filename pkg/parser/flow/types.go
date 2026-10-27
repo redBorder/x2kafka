@@ -12,6 +12,8 @@ type ParserConfig struct {
 	ExcludeFields       []string
 	HomeNets            []string
 	SpanPort            bool
+	ApplicationsFile    string
+	HostsPath           string
 }
 
 // JSONFlowRecord represents the canonical RedBorder flow record emitted to Kafka, matching f2k.

@@ -3,6 +3,8 @@ package flow
 import (
 	"encoding/binary"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -11,6 +13,34 @@ type FlowParser struct {
 	cfg         *ParserConfig
 	cache       *TemplateCache
 	homeChecker *HomeNetChecker
+}
+
+func loadAppDictionary(cache *TemplateCache, cfg *ParserConfig) {
+	if cache == nil || cfg == nil {
+		return
+	}
+	appFile := cfg.ApplicationsFile
+	if appFile == "" && cfg.HostsPath != "" {
+		candidate := filepath.Join(cfg.HostsPath, "applications")
+		if _, err := os.Stat(candidate); err == nil {
+			appFile = candidate
+		}
+	}
+	if appFile == "" {
+		// Auto-check standard redBorder applications database locations
+		for _, candidate := range []string{
+			"/etc/objects/applications",
+			"/opt/rb/etc/objects/applications",
+		} {
+			if _, err := os.Stat(candidate); err == nil {
+				appFile = candidate
+				break
+			}
+		}
+	}
+	if appFile != "" {
+		_ = cache.LoadApplicationDictionary(appFile)
+	}
 }
 
 // NewFlowParser creates a new FlowParser with default cache TTL.
@@ -25,9 +55,12 @@ func NewFlowParser(cfg *ParserConfig) *FlowParser {
 	}
 	checker, _ := NewHomeNetChecker(subnets)
 
+	cache := NewTemplateCache(ttl)
+	loadAppDictionary(cache, cfg)
+
 	return &FlowParser{
 		cfg:         cfg,
-		cache:       NewTemplateCache(ttl),
+		cache:       cache,
 		homeChecker: checker,
 	}
 }
@@ -39,6 +72,7 @@ func NewFlowParserWithCache(cfg *ParserConfig, cache *TemplateCache) *FlowParser
 		subnets = cfg.HomeNets
 	}
 	checker, _ := NewHomeNetChecker(subnets)
+	loadAppDictionary(cache, cfg)
 
 	return &FlowParser{
 		cfg:         cfg,

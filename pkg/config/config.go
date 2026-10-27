@@ -29,6 +29,8 @@ type Config struct {
 	StatsBind         string           `json:"stats_bind,omitempty"`           // Bind IP for stats endpoint
 	StatsSocket       string           `json:"stats_socket,omitempty"`         // UNIX socket path for stats query (e.g. /run/x2kafka/x2kafka.sock)
 	MibDirs           []string         `json:"mib_dirs,omitempty"`             // Paths containing SNMP MIB files
+	ApplicationsFile  string           `json:"applications_file,omitempty"`     // Path to redBorder applications mapping file
+	HostsPath         string           `json:"hosts_path,omitempty"`            // Path to redBorder objects directory (e.g. /etc/objects)
 	Listeners         []ListenerConfig `json:"listeners"`
 	RDKafkaOptions    map[string]string`json:"rdkafka_options,omitempty"`
 }
@@ -84,6 +86,8 @@ type ListenerConfig struct {
 	HomeNets             []string                          `json:"home_nets,omitempty"`             // Home network CIDRs for LAN/WAN orientation
 	HomeNet              []string                          `json:"home_net,omitempty"`              // Alias for home_nets
 	SpanPort             bool                              `json:"span_port,omitempty"`             // Mirror/SPAN port mode (prefers ingress MACs)
+	ApplicationsFile     string                            `json:"applications_file,omitempty"`     // Path to redBorder applications mapping file
+	HostsPath            string                            `json:"hosts_path,omitempty"`            // Path to redBorder objects directory (e.g. /etc/objects)
 }
 
 // LoadConfig reads and parses a JSON config file.
@@ -174,6 +178,12 @@ func LoadConfig(filename string) (*Config, error) {
 			} else if len(cfg.HomeNet) > 0 {
 				l.HomeNets = cfg.HomeNet
 			}
+		}
+		if l.ApplicationsFile == "" && cfg.ApplicationsFile != "" {
+			l.ApplicationsFile = cfg.ApplicationsFile
+		}
+		if l.HostsPath == "" && cfg.HostsPath != "" {
+			l.HostsPath = cfg.HostsPath
 		}
 
 		// Set default ports and topics for flow protocols if unset

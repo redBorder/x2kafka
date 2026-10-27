@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"net"
+	"os"
 	"testing"
 	"time"
 )
@@ -829,5 +830,431 @@ func TestMalformedPackets(t *testing.T) {
 	_, err = parser.Parse([]byte{0x00, 0x05, 0x00, 0x01, 0x00, 0x00}, "127.0.0.1")
 	if err == nil {
 		t.Errorf("expected error on truncated v5 header")
+	}
+}
+
+func TestNetFlowV9OptionsTemplateAppAndInterfaceResolution(t *testing.T) {
+	cache := NewTemplateCache(10 * time.Minute)
+
+	// Step 1: NetFlow v9 Options Template (Template ID 257)
+	// Scope length = 4 (e.g. system), Option length = 8 (AppID 95 len 8, AppName 96 len 16 -> total 24)
+	optTmplBuf := new(bytes.Buffer)
+	// Header (20 bytes)
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(9))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(1)) // count = 1 FlowSet
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint32(1000))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint32(1700000000))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint32(1))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint32(1)) // Source ID = 1
+
+	// Options Template FlowSet (FlowSet ID = 1)
+	// Length = 4 (FlowSet header) + 6 (opt tmpl header) + 4 (scope field) + 8 (option fields) = 22 -> pad to 24
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(1))  // FlowSet ID = 1
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(24)) // FlowSet Length = 24
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(257)) // Template ID = 257
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(4))   // Scope Length = 4
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(8))   // Option Length = 8
+	// Scope field: System (type 1, len 4)
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(1))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(4))
+	// Option field 1: APPLICATION_ID (95, len 8)
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(95))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(8))
+	// Option field 2: APPLICATION_NAME (96, len 16)
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(96))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(16))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(0)) // 2 bytes padding
+
+	_, err := ParseNetFlowV9(optTmplBuf.Bytes(), "10.10.1.4", cache, &ParserConfig{})
+	if err != nil {
+		t.Fatalf("failed to parse options template: %v", err)
+	}
+
+	// Verify template was cached and marked as option template
+	tmpl, ok := cache.Get("10.10.1.4", 1, 257)
+	if !ok {
+		t.Fatalf("options template 257 was not cached")
+	}
+	if !tmpl.IsOptionTemplate {
+		t.Errorf("expected IsOptionTemplate = true, got false")
+	}
+
+	// Step 2: Option Data FlowSet (Template ID 257)
+	// Scope (4 bytes) + AppID (8 bytes: 0x0000304400003f43 = 53068615925571) + AppName (16 bytes: "DNS\x00...")
+	optDataBuf := new(bytes.Buffer)
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint16(9))
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint16(1))
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint32(1001))
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint32(1700000001))
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint32(2))
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint32(1)) // Source ID = 1
+
+	// Data FlowSet ID = 257, Length = 4 + 4 + 8 + 16 = 32
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint16(257))
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint16(32))
+	// Scope = 1
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint32(1))
+	// AppID (8 bytes) = 53068615925571 (0x0000304400003f43)
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint32(12356)) // 0x3044
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint32(16195)) // 0x3f43
+	// AppName = "DNS" (16 bytes null padded)
+	nameBytes := make([]byte, 16)
+	copy(nameBytes, "DNS")
+	optDataBuf.Write(nameBytes)
+
+	optRecords, err := ParseNetFlowV9(optDataBuf.Bytes(), "10.10.1.4", cache, &ParserConfig{})
+	if err != nil {
+		t.Fatalf("failed to parse option data flowset: %v", err)
+	}
+	// Option data flowsets should NOT produce traffic records
+	if len(optRecords) != 0 {
+		t.Errorf("expected 0 traffic records from option data flowset, got %d", len(optRecords))
+	}
+
+	// Step 3: Regular Data Template (Template ID 258)
+	// SrcIP (8, 4), DstIP (12, 4), SrcPort (7, 2), DstPort (11, 2), Proto (4, 1), AppID (95, 8)
+	dataTmplBuf := new(bytes.Buffer)
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(9))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(1))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint32(1002))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint32(1700000002))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint32(3))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint32(1)) // Source ID = 1
+
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(0))  // Template FlowSet
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(32)) // Length
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(258)) // Template ID 258
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(6))   // 6 fields
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(8))   // SrcIP
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(4))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(12))  // DstIP
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(4))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(7))   // SrcPort
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(2))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(11))  // DstPort
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(2))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(4))   // Proto
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(1))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(95))  // AppID
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(8))
+
+	_, err = ParseNetFlowV9(dataTmplBuf.Bytes(), "10.10.1.4", cache, &ParserConfig{})
+	if err != nil {
+		t.Fatalf("failed to parse data template: %v", err)
+	}
+
+	// Step 4: Regular Traffic Flow (Template ID 258)
+	trafficBuf := new(bytes.Buffer)
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(9))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(1))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(1003))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(1700000003))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(4))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(1)) // Source ID = 1
+
+	// Data FlowSet: ID 258, Length = 4 + 4 + 4 + 2 + 2 + 1 + 8 = 25 -> pad to 28
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(258))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(28))
+	trafficBuf.Write(net.ParseIP("192.168.2.2").To4())
+	trafficBuf.Write(net.ParseIP("8.8.8.8").To4())
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(58866))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(53))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint8(17)) // UDP
+	// AppID (8 bytes: 0x0000304400003f43)
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(12356))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(16195))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint8(0)) // pad 3 bytes
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(0))
+
+	flows, err := ParseNetFlowV9(trafficBuf.Bytes(), "10.10.1.4", cache, &ParserConfig{})
+	if err != nil {
+		t.Fatalf("failed to parse traffic flow: %v", err)
+	}
+	if len(flows) != 1 {
+		t.Fatalf("expected 1 flow, got %d", len(flows))
+	}
+
+	flow := flows[0]
+	if flow.ApplicationName != "DNS" {
+		t.Errorf("expected ApplicationName 'DNS', got '%s'", flow.ApplicationName)
+	}
+	if flow.ApplicationIDName != "DNS" {
+		t.Errorf("expected ApplicationIDName 'DNS', got '%s'", flow.ApplicationIDName)
+	}
+	if flow.EngineIDName != "12356" {
+		t.Errorf("expected EngineIDName '12356', got '%s'", flow.EngineIDName)
+	}
+	if flow.ApplicationID != "12356:16195" {
+		t.Errorf("expected ApplicationID '12356:16195', got '%s'", flow.ApplicationID)
+	}
+}
+
+func TestNetFlowV9InterfaceNameOptionsResolution(t *testing.T) {
+	cache := NewTemplateCache(10 * time.Minute)
+
+	// Step 1: NetFlow v9 Options Template for Interface Names (Template ID 259)
+	// Scope: System (4 bytes), Options: INPUT_SNMP (10, 4 bytes), IF_NAME (82, 16 bytes)
+	optTmplBuf := new(bytes.Buffer)
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(9))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(1))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint32(1000))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint32(1700000000))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint32(1))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint32(1)) // Source ID = 1
+
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(1))  // Options Template FlowSet
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(24)) // Length
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(259)) // Template ID = 259
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(4))   // Scope Length = 4
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(8))   // Option Length = 8
+	// Scope: System
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(1))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(4))
+	// Option 1: INPUT_SNMP (10, len 4)
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(10))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(4))
+	// Option 2: IF_NAME (82, len 16)
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(82))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(16))
+	_ = binary.Write(optTmplBuf, binary.BigEndian, uint16(0)) // pad 2 bytes
+
+	_, err := ParseNetFlowV9(optTmplBuf.Bytes(), "10.10.1.4", cache, &ParserConfig{})
+	if err != nil {
+		t.Fatalf("failed to parse options template: %v", err)
+	}
+
+	// Step 2: Send Option Data: SNMP 34 -> "wan1"
+	optDataBuf := new(bytes.Buffer)
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint16(9))
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint16(1))
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint32(1001))
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint32(1700000001))
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint32(2))
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint32(1))
+
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint16(259)) // Data FlowSet ID 259
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint16(28))  // 4 header + 4 scope + 4 snmp + 16 ifName = 28
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint32(1))   // Scope = 1
+	_ = binary.Write(optDataBuf, binary.BigEndian, uint32(34))  // SNMP ifIndex = 34
+	nameBytes := make([]byte, 16)
+	copy(nameBytes, "wan1")
+	optDataBuf.Write(nameBytes)
+
+	_, err = ParseNetFlowV9(optDataBuf.Bytes(), "10.10.1.4", cache, &ParserConfig{})
+	if err != nil {
+		t.Fatalf("failed to parse option data: %v", err)
+	}
+
+	// Step 3: Regular Template with INGRESS_INTERFACE (10, len 4) and EGRESS_INTERFACE (14, len 4)
+	dataTmplBuf := new(bytes.Buffer)
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(9))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(1))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint32(1002))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint32(1700000002))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint32(3))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint32(1))
+
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(0))  // Template FlowSet
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(20)) // Length
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(260)) // Template ID 260
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(3))   // 3 fields
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(8))   // SrcIP
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(4))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(10))  // INGRESS_INTERFACE
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(4))
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(14))  // EGRESS_INTERFACE
+	_ = binary.Write(dataTmplBuf, binary.BigEndian, uint16(4))
+
+	_, err = ParseNetFlowV9(dataTmplBuf.Bytes(), "10.10.1.4", cache, &ParserConfig{})
+	if err != nil {
+		t.Fatalf("failed to parse data template: %v", err)
+	}
+
+	// Step 4: Traffic Flow with LanInterface = 34
+	trafficBuf := new(bytes.Buffer)
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(9))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(1))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(1003))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(1700000003))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(4))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(1))
+
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(260))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(16)) // 4 header + 4 ip + 4 in + 4 out = 16
+	trafficBuf.Write(net.ParseIP("10.0.0.1").To4())
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(34)) // INGRESS = 34
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(12)) // EGRESS = 12
+
+	flows, err := ParseNetFlowV9(trafficBuf.Bytes(), "10.10.1.4", cache, &ParserConfig{})
+	if err != nil {
+		t.Fatalf("failed to parse traffic flow: %v", err)
+	}
+	if len(flows) != 1 {
+		t.Fatalf("expected 1 flow, got %d", len(flows))
+	}
+	if flows[0].LanInterfaceName != "wan1" {
+		t.Errorf("expected LanInterfaceName 'wan1' resolved from options, got '%s'", flows[0].LanInterfaceName)
+	}
+	if flows[0].WanInterfaceName != "12" {
+		t.Errorf("expected WanInterfaceName '12' (fallback to numeric), got '%s'", flows[0].WanInterfaceName)
+	}
+}
+
+func TestApplicationDictionaryFallback(t *testing.T) {
+	// Create temporary applications file
+	tmpFile, err := os.CreateTemp("", "applications-*")
+	if err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpFile.Name())
+
+	content := "# redBorder applications dictionary\n" +
+		"dns                       50331701\n" +
+		"http                      50331859\n" +
+		"skype                     218103891\n" +
+		"forti-dns                 53068615925571\n"
+	if _, err := tmpFile.WriteString(content); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+	tmpFile.Close()
+
+	// Verify parser loaded with ApplicationsFile resolves Cisco skype and FortiGate DNS
+	parser := NewFlowParser(&ParserConfig{
+		ApplicationsFile: tmpFile.Name(),
+	})
+
+	// 1. Cisco skype flow (Engine 13, App 83 = 218103891)
+	tmplBuf := new(bytes.Buffer)
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(9))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(1))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint32(100))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint32(1700000000))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint32(1))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint32(1))
+
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(0))  // Template FlowSet
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(28)) // Length
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(262))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(5))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(8))   // SrcIP
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(4))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(12))  // DstIP
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(4))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(7))   // SrcPort
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(2))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(11))  // DstPort
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(2))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(95))  // AppID (len 4)
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(4))
+
+	if _, err := parser.Parse(tmplBuf.Bytes(), "10.10.1.4"); err != nil {
+		t.Fatalf("failed to parse template: %v", err)
+	}
+
+	trafficBuf := new(bytes.Buffer)
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(9))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(1))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(101))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(1700000001))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(2))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(1))
+
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(262))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(20))
+	trafficBuf.Write(net.ParseIP("192.168.2.2").To4())
+	trafficBuf.Write(net.ParseIP("8.8.8.8").To4())
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(58866))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(443))
+	// Cisco Engine 13 (0x0D), App 83 (0x000053) = 218103891
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint8(13))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint8(0))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint8(0))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint8(83))
+
+	flows, err := parser.Parse(trafficBuf.Bytes(), "10.10.1.4")
+	if err != nil {
+		t.Fatalf("failed to parse flow: %v", err)
+	}
+	if len(flows) != 1 {
+		t.Fatalf("expected 1 flow, got %d", len(flows))
+	}
+	if flows[0].ApplicationName != "skype" {
+		t.Errorf("expected ApplicationName 'skype', got '%s'", flows[0].ApplicationName)
+	}
+	if flows[0].ApplicationIDName != "skype" {
+		t.Errorf("expected ApplicationIDName 'skype', got '%s'", flows[0].ApplicationIDName)
+	}
+	if flows[0].ApplicationID != "13:83" {
+		t.Errorf("expected ApplicationID '13:83', got '%s'", flows[0].ApplicationID)
+	}
+}
+
+func TestUnresolvedApplicationIDFormatting(t *testing.T) {
+	// Without any option packets or dictionary,
+	// Cisco 4-byte IDs format as engine:app (e.g. "13:83") and FortiGate as raw ID string, matching f2k.
+	parser := NewFlowParser(&ParserConfig{})
+
+	// 1. Template with AppID (len 4 for Cisco)
+	tmplBuf := new(bytes.Buffer)
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(9))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(1))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint32(100))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint32(1700000000))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint32(1))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint32(1))
+
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(0))  // Template FlowSet
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(28)) // Length
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(261))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(5))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(8))   // SrcIP
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(4))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(12))  // DstIP
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(4))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(7))   // SrcPort
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(2))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(11))  // DstPort
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(2))
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(95))  // AppID (len 4)
+	_ = binary.Write(tmplBuf, binary.BigEndian, uint16(4))
+
+	_, err := parser.Parse(tmplBuf.Bytes(), "10.10.1.4")
+	if err != nil {
+		t.Fatalf("failed to parse template: %v", err)
+	}
+
+	// 2. Traffic Flow: Cisco Engine 13, App 83 (0x0D000053)
+	trafficBuf := new(bytes.Buffer)
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(9))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(1))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(101))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(1700000001))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(2))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint32(1))
+
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(261))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(20)) // 4 header + 4 + 4 + 2 + 2 + 4 = 20
+	trafficBuf.Write(net.ParseIP("192.168.2.2").To4())
+	trafficBuf.Write(net.ParseIP("8.8.8.8").To4())
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(58866))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint16(443))
+	// Cisco Engine 13 (0x0D), App 83 (0x000053)
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint8(13))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint8(0))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint8(0))
+	_ = binary.Write(trafficBuf, binary.BigEndian, uint8(83))
+
+	flows, err := parser.Parse(trafficBuf.Bytes(), "10.10.1.4")
+	if err != nil {
+		t.Fatalf("failed to parse traffic flow: %v", err)
+	}
+	if len(flows) != 1 {
+		t.Fatalf("expected 1 flow, got %d", len(flows))
+	}
+	if flows[0].ApplicationID != "13:83" {
+		t.Errorf("expected ApplicationID '13:83', got '%s'", flows[0].ApplicationID)
+	}
+	if flows[0].ApplicationName != "13:83" {
+		t.Errorf("expected ApplicationName '13:83' fallback, got '%s'", flows[0].ApplicationName)
 	}
 }
