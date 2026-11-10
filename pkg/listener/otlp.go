@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	_ "google.golang.org/grpc/encoding/gzip" // Register gzip compressor for gRPC OTLP clients
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -40,6 +41,9 @@ import (
 
 type OTLPListener struct {
 	cfg           config.ListenerConfig
+	metricsCfg    config.ListenerConfig
+	logsCfg       config.ListenerConfig
+	tracesCfg     config.ListenerConfig
 	decoder       *decoder.Decoder
 	ipFilter      *security.IPFilter
 	excludeFields map[string]bool
@@ -82,15 +86,11 @@ func NewOTLPListener(cfg config.ListenerConfig) *OTLPListener {
 		if cfg.Topic != "" {
 			cfg.LogsTopic = cfg.Topic
 		} else {
-			cfg.LogsTopic = "rb_syslog"
+			cfg.LogsTopic = "rb_vault"
 		}
 	}
-	if cfg.TracesTopic == "" {
-		if cfg.Topic != "" {
-			cfg.TracesTopic = cfg.Topic
-		} else {
-			cfg.TracesTopic = "rb_trace"
-		}
+	if cfg.TracesTopic == "" && cfg.Topic != "" {
+		cfg.TracesTopic = cfg.Topic
 	}
 	if cfg.Port == 0 {
 		if cfg.Proto == "otlp_grpc" {
@@ -109,10 +109,113 @@ func NewOTLPListener(cfg config.ListenerConfig) *OTLPListener {
 
 	return &OTLPListener{
 		cfg:           cfg,
+		metricsCfg:    buildSignalConfig(cfg, "metrics", cfg.MetricsTopic),
+		logsCfg:       buildSignalConfig(cfg, "logs", cfg.LogsTopic),
+		tracesCfg:     buildSignalConfig(cfg, "traces", cfg.TracesTopic),
 		decoder:       decoder.NewDecoder(),
 		ipFilter:      security.NewIPFilter(cfg.AllowedIPs, cfg.BlacklistIPs),
 		excludeFields: excl,
 	}
+}
+
+var reservedOTLPSignalKeys = map[string]bool{
+	"metrics":    true,
+	"metric":     true,
+	"logs":       true,
+	"log":        true,
+	"traces":     true,
+	"trace":      true,
+	"rb_monitor": true,
+	"rb_vault":   true,
+	"rb_syslog":  true,
+	"rb_trace":   true,
+}
+
+func buildSignalConfig(base config.ListenerConfig, signal string, targetTopic string) config.ListenerConfig {
+	out := base
+	if len(base.EnrichmentMap) == 0 {
+		return out
+	}
+
+	singular := strings.TrimSuffix(signal, "s")
+	resolvedMap := make(map[string]map[string]interface{}, len(base.EnrichmentMap))
+
+	// First pass: resolve normal entries (and nested signal sub-maps)
+	for key, entry := range base.EnrichmentMap {
+		if idx := strings.LastIndex(key, ":"); idx != -1 {
+			suffix := key[idx+1:]
+			if reservedOTLPSignalKeys[suffix] {
+				continue
+			}
+		}
+
+		shared := make(map[string]interface{})
+		hasSignalSubMap := false
+		for k, v := range entry {
+			if reservedOTLPSignalKeys[k] {
+				if _, isMap := v.(map[string]interface{}); isMap {
+					hasSignalSubMap = true
+					continue
+				}
+			}
+			shared[k] = v
+		}
+
+		var signalFields map[string]interface{}
+		for _, candidateKey := range []string{signal, singular, targetTopic} {
+			if candidateKey == "" {
+				continue
+			}
+			if subRaw, ok := entry[candidateKey].(map[string]interface{}); ok {
+				if inner, hasInner := subRaw["enrichment"].(map[string]interface{}); hasInner {
+					signalFields = inner
+				} else {
+					signalFields = subRaw
+				}
+				break
+			}
+		}
+
+		if signalFields != nil {
+			merged := make(map[string]interface{}, len(shared)+len(signalFields))
+			for k, v := range shared {
+				merged[k] = v
+			}
+			for k, v := range signalFields {
+				merged[k] = v
+			}
+			resolvedMap[key] = merged
+		} else if !hasSignalSubMap && len(shared) > 0 {
+			resolvedMap[key] = shared
+		} else if len(shared) > 0 {
+			resolvedMap[key] = shared
+		}
+	}
+
+	// Second pass: composite keys like "<ip>:metrics", "<ip>:logs", "<ip>:traces", "<ip>:<topic>"
+	for key, entry := range base.EnrichmentMap {
+		idx := strings.LastIndex(key, ":")
+		if idx == -1 {
+			continue
+		}
+		baseKey := key[:idx]
+		suffix := key[idx+1:]
+		if suffix == signal || suffix == singular || (targetTopic != "" && suffix == targetTopic) {
+			merged := make(map[string]interface{}, len(entry))
+			if existing, ok := resolvedMap[baseKey]; ok {
+				for k, v := range existing {
+					merged[k] = v
+				}
+			}
+			for k, v := range entry {
+				merged[k] = v
+			}
+			resolvedMap[baseKey] = merged
+		}
+	}
+
+	out.EnrichmentMap = resolvedMap
+	return out
 }
 
 func (o *OTLPListener) Name() string {
@@ -229,14 +332,69 @@ func (o *OTLPListener) Stop() error {
 	return nil
 }
 
-func (o *OTLPListener) extractGRPCClientIP(ctx context.Context) (string, error) {
-	srcAddr := ""
-	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
-		srcAddr = p.Addr.String()
-		if host, _, err := net.SplitHostPort(srcAddr); err == nil {
-			srcAddr = host
+func parseCanonicalIP(raw string) (net.IP, string) {
+	candidate := strings.TrimSpace(raw)
+	if candidate == "" {
+		return nil, ""
+	}
+	if host, _, err := net.SplitHostPort(candidate); err == nil {
+		candidate = host
+	}
+	ip := net.ParseIP(candidate)
+	if ip == nil {
+		return nil, ""
+	}
+	return ip, ip.String()
+}
+
+func resolveClientIP(peerAddr string, realIP string, forwardedFor string) string {
+	srcAddr := peerAddr
+	if host, _, err := net.SplitHostPort(srcAddr); err == nil {
+		srcAddr = host
+	}
+	if ip := net.ParseIP(srcAddr); ip != nil && ip.IsLoopback() {
+		if _, canon := parseCanonicalIP(realIP); canon != "" {
+			return canon
+		}
+		if forwardedFor != "" {
+			parts := strings.Split(forwardedFor, ",")
+			fallbackLoopback := ""
+			for i := len(parts) - 1; i >= 0; i-- {
+				parsed, canon := parseCanonicalIP(parts[i])
+				if parsed == nil {
+					continue
+				}
+				if !parsed.IsLoopback() {
+					return canon
+				}
+				if fallbackLoopback == "" {
+					fallbackLoopback = canon
+				}
+			}
+			if fallbackLoopback != "" {
+				return fallbackLoopback
+			}
 		}
 	}
+	return srcAddr
+}
+
+func (o *OTLPListener) extractGRPCClientIP(ctx context.Context) (string, error) {
+	peerAddr := ""
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		peerAddr = p.Addr.String()
+	}
+	realIP := ""
+	forwardedFor := ""
+	if md, ok := metadata.FromIncomingContext(ctx); ok {
+		if vals := md.Get("x-real-ip"); len(vals) > 0 {
+			realIP = vals[0]
+		}
+		if vals := md.Get("x-forwarded-for"); len(vals) > 0 {
+			forwardedFor = vals[0]
+		}
+	}
+	srcAddr := resolveClientIP(peerAddr, realIP, forwardedFor)
 	if !o.ipFilter.IsAllowed(srcAddr) {
 		stats.IncListenerError(o.Name())
 		return "", status.Error(codes.PermissionDenied, "IP not allowed")
@@ -275,10 +433,7 @@ func (t *otlpTraceGRPCServer) Export(ctx context.Context, req *coltracepb.Export
 }
 
 func (o *OTLPListener) handleHTTPRequest(w http.ResponseWriter, r *http.Request) {
-	srcAddr := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(srcAddr); err == nil {
-		srcAddr = host
-	}
+	srcAddr := resolveClientIP(r.RemoteAddr, r.Header.Get("X-Real-IP"), r.Header.Get("X-Forwarded-For"))
 
 	if !o.ipFilter.IsAllowed(srcAddr) {
 		stats.IncListenerError(o.Name())
@@ -432,7 +587,7 @@ func (o *OTLPListener) processMetrics(req *colmetricspb.ExportMetricsServiceRequ
 						}
 						setNumberDataPointValue(doc, dp)
 						mergeAttributes(doc, dp.GetAttributes())
-						o.emitDoc(doc, o.cfg.MetricsTopic, srcAddr)
+						o.emitDoc(doc, o.metricsCfg, o.cfg.MetricsTopic, srcAddr)
 					}
 
 				case *metricspb.Metric_Sum:
@@ -446,7 +601,7 @@ func (o *OTLPListener) processMetrics(req *colmetricspb.ExportMetricsServiceRequ
 						}
 						setNumberDataPointValue(doc, dp)
 						mergeAttributes(doc, dp.GetAttributes())
-						o.emitDoc(doc, o.cfg.MetricsTopic, srcAddr)
+						o.emitDoc(doc, o.metricsCfg, o.cfg.MetricsTopic, srcAddr)
 					}
 
 				case *metricspb.Metric_Histogram:
@@ -469,7 +624,7 @@ func (o *OTLPListener) processMetrics(req *colmetricspb.ExportMetricsServiceRequ
 							doc["max"] = dp.GetMax()
 						}
 						mergeAttributes(doc, dp.GetAttributes())
-						o.emitDoc(doc, o.cfg.MetricsTopic, srcAddr)
+						o.emitDoc(doc, o.metricsCfg, o.cfg.MetricsTopic, srcAddr)
 					}
 
 				case *metricspb.Metric_ExponentialHistogram:
@@ -492,7 +647,7 @@ func (o *OTLPListener) processMetrics(req *colmetricspb.ExportMetricsServiceRequ
 							doc["max"] = dp.GetMax()
 						}
 						mergeAttributes(doc, dp.GetAttributes())
-						o.emitDoc(doc, o.cfg.MetricsTopic, srcAddr)
+						o.emitDoc(doc, o.metricsCfg, o.cfg.MetricsTopic, srcAddr)
 					}
 
 				case *metricspb.Metric_Summary:
@@ -507,7 +662,7 @@ func (o *OTLPListener) processMetrics(req *colmetricspb.ExportMetricsServiceRequ
 						doc["sum"] = dp.GetSum()
 						doc["value"] = dp.GetSum()
 						mergeAttributes(doc, dp.GetAttributes())
-						o.emitDoc(doc, o.cfg.MetricsTopic, srcAddr)
+						o.emitDoc(doc, o.metricsCfg, o.cfg.MetricsTopic, srcAddr)
 					}
 				}
 			}
@@ -557,13 +712,16 @@ func (o *OTLPListener) processLogs(req *collogspb.ExportLogsServiceRequest, srcA
 				}
 
 				mergeAttributes(doc, lr.GetAttributes())
-				o.emitDoc(doc, o.cfg.LogsTopic, srcAddr)
+				o.emitDoc(doc, o.logsCfg, o.cfg.LogsTopic, srcAddr)
 			}
 		}
 	}
 }
 
 func (o *OTLPListener) processTraces(req *coltracepb.ExportTraceServiceRequest, srcAddr string, sensorUUID string) {
+	if o.cfg.TracesTopic == "" && len(o.cfg.EnrichmentRules) == 0 {
+		return
+	}
 	for _, rs := range req.GetResourceSpans() {
 		resAttrs := extractAttributes(rs.GetResource().GetAttributes())
 		for _, ss := range rs.GetScopeSpans() {
@@ -601,7 +759,7 @@ func (o *OTLPListener) processTraces(req *coltracepb.ExportTraceServiceRequest, 
 				}
 
 				mergeAttributes(doc, span.GetAttributes())
-				o.emitDoc(doc, o.cfg.TracesTopic, srcAddr)
+				o.emitDoc(doc, o.tracesCfg, o.cfg.TracesTopic, srcAddr)
 			}
 		}
 	}
@@ -646,7 +804,7 @@ func (o *OTLPListener) newBaseDoc(recordType string, timeUnixNano uint64, srcAdd
 	return doc
 }
 
-func (o *OTLPListener) emitDoc(doc map[string]interface{}, defaultTopic string, srcAddr string) {
+func (o *OTLPListener) emitDoc(doc map[string]interface{}, signalCfg config.ListenerConfig, defaultTopic string, srcAddr string) {
 	if len(o.excludeFields) > 0 {
 		for k := range o.excludeFields {
 			delete(doc, k)
@@ -658,7 +816,7 @@ func (o *OTLPListener) emitDoc(doc map[string]interface{}, defaultTopic string, 
 		return
 	}
 
-	formatted, ruleTopic, err := o.decoder.FormatPayloadWithConfigAndTopic(rawBytes, o.cfg, o.cfg.Proto, srcAddr)
+	formatted, ruleTopic, err := o.decoder.FormatPayloadWithConfigAndTopic(rawBytes, signalCfg, signalCfg.Proto, srcAddr)
 	if err != nil || len(formatted) == 0 {
 		return
 	}
@@ -668,7 +826,10 @@ func (o *OTLPListener) emitDoc(doc map[string]interface{}, defaultTopic string, 
 		topic = defaultTopic
 	}
 	if topic == "" {
-		topic = o.cfg.Topic
+		topic = signalCfg.Topic
+	}
+	if topic == "" {
+		return
 	}
 
 	o.msgChan <- &kafka.Message{

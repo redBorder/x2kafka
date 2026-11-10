@@ -89,8 +89,8 @@ type ListenerConfig struct {
 	ApplicationsFile     string                            `json:"applications_file,omitempty"`     // Path to redBorder applications mapping file
 	HostsPath            string                            `json:"hosts_path,omitempty"`            // Path to redBorder objects directory (e.g. /etc/objects)
 	MetricsTopic         string                            `json:"metrics_topic,omitempty"`         // Target Kafka topic for OTLP metrics (default "rb_monitor")
-	LogsTopic            string                            `json:"logs_topic,omitempty"`            // Target Kafka topic for OTLP logs (default "rb_syslog")
-	TracesTopic          string                            `json:"traces_topic,omitempty"`          // Target Kafka topic for OTLP traces (default "rb_trace")
+	LogsTopic            string                            `json:"logs_topic,omitempty"`            // Target Kafka topic for OTLP logs (default "rb_vault")
+	TracesTopic          string                            `json:"traces_topic,omitempty"`          // Target Kafka topic for OTLP traces (disabled by default unless set)
 }
 
 // LoadConfig reads and parses a JSON config file.
@@ -238,15 +238,21 @@ func LoadConfig(filename string) (*Config, error) {
 			httpL := l
 			httpL.Name = l.Name + "-http"
 			httpL.Proto = "otlp_http"
-			if httpL.Port == 0 {
-				httpL.Port = 4318
-			}
 
 			grpcL := l
 			grpcL.Name = l.Name + "-grpc"
 			grpcL.Proto = "otlp_grpc"
-			if grpcL.Port == 0 {
+
+			switch l.Port {
+			case 0, 4317:
 				grpcL.Port = 4317
+				httpL.Port = 4318
+			case 4318:
+				httpL.Port = 4318
+				grpcL.Port = 4317
+			default:
+				grpcL.Port = l.Port
+				httpL.Port = l.Port + 1
 			}
 
 			expandedListeners = append(expandedListeners, httpL, grpcL)
@@ -286,15 +292,11 @@ func applyOTLPDefaults(l *ListenerConfig) {
 		if l.Topic != "" {
 			l.LogsTopic = l.Topic
 		} else {
-			l.LogsTopic = "rb_syslog"
+			l.LogsTopic = "rb_vault"
 		}
 	}
-	if l.TracesTopic == "" {
-		if l.Topic != "" {
-			l.TracesTopic = l.Topic
-		} else {
-			l.TracesTopic = "rb_trace"
-		}
+	if l.TracesTopic == "" && l.Topic != "" {
+		l.TracesTopic = l.Topic
 	}
 	switch l.Proto {
 	case "otlp_http", "otlp_https":

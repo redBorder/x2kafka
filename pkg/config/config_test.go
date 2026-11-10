@@ -114,7 +114,8 @@ func TestLoadConfig_OTLPExpansion(t *testing.T) {
 			{
 				"name": "otel-collector",
 				"proto": "otlp",
-				"bind": "0.0.0.0"
+				"bind": "0.0.0.0",
+				"port": 4317
 			},
 			{
 				"name": "otel-custom-http",
@@ -151,7 +152,7 @@ func TestLoadConfig_OTLPExpansion(t *testing.T) {
 	if httpL.Name != "otel-collector-http" || httpL.Proto != "otlp_http" || httpL.Port != 4318 {
 		t.Errorf("Expected otel-collector-http on port 4318, got name=%q proto=%q port=%d", httpL.Name, httpL.Proto, httpL.Port)
 	}
-	if httpL.MetricsTopic != "rb_monitor" || httpL.LogsTopic != "rb_syslog" || httpL.TracesTopic != "rb_trace" {
+	if httpL.MetricsTopic != "rb_monitor" || httpL.LogsTopic != "rb_vault" || httpL.TracesTopic != "" {
 		t.Errorf("Unexpected default signal topics: metrics=%q logs=%q traces=%q", httpL.MetricsTopic, httpL.LogsTopic, httpL.TracesTopic)
 	}
 	if httpL.MaxMsgSize != 4*1024*1024 {
@@ -162,7 +163,7 @@ func TestLoadConfig_OTLPExpansion(t *testing.T) {
 	if grpcL.Name != "otel-collector-grpc" || grpcL.Proto != "otlp_grpc" || grpcL.Port != 4317 {
 		t.Errorf("Expected otel-collector-grpc on port 4317, got name=%q proto=%q port=%d", grpcL.Name, grpcL.Proto, grpcL.Port)
 	}
-	if grpcL.MetricsTopic != "rb_monitor" || grpcL.LogsTopic != "rb_syslog" || grpcL.TracesTopic != "rb_trace" {
+	if grpcL.MetricsTopic != "rb_monitor" || grpcL.LogsTopic != "rb_vault" || grpcL.TracesTopic != "" {
 		t.Errorf("Unexpected default signal topics on gRPC: metrics=%q logs=%q traces=%q", grpcL.MetricsTopic, grpcL.LogsTopic, grpcL.TracesTopic)
 	}
 

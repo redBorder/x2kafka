@@ -34,10 +34,10 @@ This repository provides two high-performance streaming daemons for the redBorde
   - **Field Exclusion (`exclude_fields`)**: Allows dropping specified flow fields from the emitted JSON records before Kafka serialization.
 - **Native OpenTelemetry (OTLP) Receiver (`proto: "otlp"`, `"otlp_http"`, `"otlp_https"`, `"otlp_grpc"`)**:
   - **Dual Transport (`:4318` HTTP/S & `:4317` gRPC)**: Specifying `"proto": "otlp"` automatically starts both the OTLP/HTTP (`:4318`, supporting `application/x-protobuf` and `application/json` with GZIP/ZLIB/Deflate decompression) and OTLP/gRPC (`:4317`, supporting Protobuf and GZIP) receivers.
-  - **Signal-Based Topic Routing**: Automatically distinguishes OpenTelemetry signals and routes flattened JSON records to dedicated topics:
+  - **Signal-Based Topic Routing & Per-Signal Enrichment**: Automatically distinguishes OpenTelemetry signals, enriches each signal with its dedicated sensor metadata (`metrics`, `logs`, `traces` sub-maps inside `enrichment_map`), and routes flattened JSON records to dedicated topics:
     - **Metrics** (`/v1/metrics` / `MetricsService`) $\to$ `rb_monitor` (configurable via `metrics_topic`; unpacks Gauge, Sum, Histogram, ExponentialHistogram, and Summary data points).
-    - **Logs** (`/v1/logs` / `LogsService`) $\to$ `rb_syslog` (configurable via `logs_topic`; supports KV/CEF/Regex extraction and schema standardization).
-    - **Traces** (`/v1/traces` / `TraceService`) $\to$ `rb_trace` (configurable via `traces_topic`; emits flattened spans with `trace_id`, `span_id`, `parent_span_id`, `duration_ms`, and status).
+    - **Logs** (`/v1/logs` / `LogsService`) $\to$ `rb_vault` (configurable via `logs_topic`; supports KV/CEF/Regex extraction and schema standardization).
+    - **Traces** (`/v1/traces` / `TraceService`) $\to$ optional (disabled by default unless `traces_topic` is set, e.g. `"rb_trace"`; emits flattened spans with `trace_id`, `span_id`, `parent_span_id`, `duration_ms`, and status).
   - **Automatic Resource & Attribute Flattening**: Merges OTel `resource.attributes` (mapping `host.name` to `hostname`), `scope` metadata, and signal attributes into flat top-level JSON keys with `sensor_ip` and `/rbdata/<sensor_uuid>/v1/...` path enrichment.
 - **IP Security & Subnet Filtering**: Granular IP allowlisting (`allowed_ips`) and blacklisting (`blacklist_ips`) supporting single IPs and CIDR subnet blocks globally or per listener.
 - **Message Splitting & Field Extraction**: Extract structured data from raw log strings using Key-Value parsing (`kv_extract`), CEF security headers (`cef_extract`), or custom named Regex patterns (`regex_patterns`).
@@ -168,12 +168,12 @@ This repository provides two high-performance streaming daemons for the redBorde
       }
     },
     {
-      "name": "opentelemetry-collector",
-      "proto": "otlp",
+      "name": "opentelemetry-grpc",
+      "proto": "otlp_grpc",
       "bind": "0.0.0.0",
+      "port": 4317,
       "metrics_topic": "rb_monitor",
-      "logs_topic": "rb_syslog",
-      "traces_topic": "rb_trace",
+      "logs_topic": "rb_vault",
       "kv_extract": true,
       "cef_extract": true,
       "schema_standardization": true,
@@ -181,8 +181,47 @@ This repository provides two high-performance streaming daemons for the redBorde
       "enrichment_key": "sensor_ip",
       "enrichment_map": {
         "10.20.20.10": {
-          "sensor_uuid": "bd2fe2c3-d0ff-4c27-aef9-122b698239b9",
-          "sensor_name": "linux-otel-agent-01"
+          "metrics": {
+            "sensor_uuid": "bd2fe2c3-d0ff-4c27-aef9-122b698239b9",
+            "sensor_name": "snmp-monitor-01"
+          },
+          "logs": {
+            "sensor_uuid": "e90902da-cec3-4020-9eaf-708ee32f86ac",
+            "sensor_name": "vault-sensor-01"
+          },
+          "traces": {
+            "sensor_uuid": "f11902da-cec3-4020-9eaf-708ee32f8699",
+            "sensor_name": "trace-sensor-01"
+          }
+        }
+      }
+    },
+    {
+      "name": "opentelemetry-http",
+      "proto": "otlp_http",
+      "bind": "0.0.0.0",
+      "port": 4318,
+      "metrics_topic": "rb_monitor",
+      "logs_topic": "rb_vault",
+      "kv_extract": true,
+      "cef_extract": true,
+      "schema_standardization": true,
+      "allowed_ips": ["10.0.0.0/8", "192.168.0.0/16"],
+      "enrichment_key": "sensor_ip",
+      "enrichment_map": {
+        "10.20.20.10": {
+          "metrics": {
+            "sensor_uuid": "bd2fe2c3-d0ff-4c27-aef9-122b698239b9",
+            "sensor_name": "snmp-monitor-01"
+          },
+          "logs": {
+            "sensor_uuid": "e90902da-cec3-4020-9eaf-708ee32f86ac",
+            "sensor_name": "vault-sensor-01"
+          },
+          "traces": {
+            "sensor_uuid": "f11902da-cec3-4020-9eaf-708ee32f8699",
+            "sensor_name": "trace-sensor-01"
+          }
         }
       }
     }
@@ -260,11 +299,11 @@ When `"proto": "otlp"` is configured, `x2kafka` listens on both **HTTP (`:4318`)
   "cpu": "0",
   "state": "user",
   "sensor_uuid": "bd2fe2c3-d0ff-4c27-aef9-122b698239b9",
-  "sensor_name": "linux-otel-agent-01"
+  "sensor_name": "snmp-monitor-01"
 }
 ```
 
-##### Emitted Log JSON (`rb_syslog`)
+##### Emitted Log JSON (`rb_vault`)
 ```json
 {
   "type": "otel_log",
@@ -280,7 +319,9 @@ When `"proto": "otlp"` is configured, `x2kafka` listens on both **HTTP (`:4318`)
   "dst_ip": "192.168.1.10",
   "username": "admin",
   "trace_id": "0102030405060708090a0b0c0d0e0f10",
-  "span_id": "0102030405060708"
+  "span_id": "0102030405060708",
+  "sensor_uuid": "e90902da-cec3-4020-9eaf-708ee32f86ac",
+  "sensor_name": "vault-sensor-01"
 }
 ```
 
@@ -322,6 +363,69 @@ service:
       receivers: [filelog]
       processors: [resourcedetection, batch]
       exporters: [otlp/x2kafka]
+```
+
+##### Securing OTLP (Native TLS vs. Nginx Reverse Proxy)
+
+Both **OTLP/HTTP** and **OTLP/gRPC** can be secured using TLS 1.2/1.3 in two ways:
+
+###### Option 1: Native TLS directly in `x2kafka` (No Nginx required)
+Configure `tls_cert` and `tls_key` on the OTLP listeners (`otlp_grpc` on `:4317`, `otlp_http` / `otlp_https` on `:4318`, or `"proto": "otlp"` which automatically binds both `:4318` and `:4317`):
+```json
+{
+  "name": "otel-ingest-grpc",
+  "proto": "otlp_grpc",
+  "bind": "0.0.0.0",
+  "port": 4317,
+  "tls_cert": "/etc/pki/tls/certs/server.crt",
+  "tls_key": "/etc/pki/tls/private/server.key",
+  "metrics_topic": "rb_monitor",
+  "logs_topic": "rb_vault",
+  "enrichment_key": "sensor_ip"
+}
+```
+
+###### Option 2: Nginx Reverse Proxy (`proxy_pass` for HTTP & `grpc_pass` for gRPC)
+Alternatively, bind `x2kafka` to loopback (`"bind": "127.0.0.1"`) and terminate TLS in Nginx. When `x2kafka` receives a connection from loopback (`127.0.0.1` / `::1`), it automatically reads `X-Real-IP` or `X-Forwarded-For` (HTTP headers and gRPC metadata) so that `sensor_ip`, `allowed_ips` / `blacklist_ips`, and `enrichment_map` resolve the real remote OTel agent IP:
+
+```nginx
+# OTLP/HTTP over HTTPS (port 4318)
+server {
+    listen 4318 ssl;
+    ssl_certificate     /etc/pki/tls/certs/server.crt;
+    ssl_certificate_key /etc/pki/tls/private/server.key;
+
+    location / {
+        proxy_pass http://127.0.0.1:4318;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+
+# OTLP/gRPC over TLS + HTTP/2 (port 4317)
+server {
+    listen 4317 ssl http2;
+    ssl_certificate     /etc/pki/tls/certs/server.crt;
+    ssl_certificate_key /etc/pki/tls/private/server.key;
+
+    location / {
+        grpc_pass grpc://127.0.0.1:4317;
+        grpc_set_header X-Real-IP $remote_addr;
+        grpc_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+###### Remote Agent TLS Configuration (`/etc/otelcol-contrib/config.yaml`)
+With either Option 1 or Option 2 enabled, update the exporter on the remote OTel Collector:
+```yaml
+exporters:
+  otlp/x2kafka:
+    endpoint: "<X2KAFKA_MANAGER_IP>:4317"
+    tls:
+      insecure: false
+      ca_file: /etc/otelcol-contrib/certs/ca.crt
 ```
 
 
@@ -470,6 +574,10 @@ Example systemd units and configs are provided in the repository:
 - **Direct SNMP Trap Receiver (UDP 162)**:
   - Unit: [`resources/systemd/examples/x2kafka-snmptrap.service`](resources/systemd/examples/x2kafka-snmptrap.service)
   - Config: [`configs_example/x2kafka_snmptrap.json`](configs_example/x2kafka_snmptrap.json) (`stats_port: 7981`, `stats_socket: /run/x2kafka/snmptrap.sock`)
+- **NetFlow / IPFIX / sFlow Receiver (UDP 2055 & 6343)**:
+  - Config: [`configs_example/x2kafka_flow.json`](configs_example/x2kafka_flow.json)
+- **OpenTelemetry (OTLP) Receiver (gRPC 4317 & HTTP 4318)**:
+  - Config: [`configs_example/x2kafka_otlp.json`](configs_example/x2kafka_otlp.json)
 
 ### How to Deploy Dedicated Services:
 
