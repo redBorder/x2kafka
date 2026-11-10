@@ -75,3 +75,19 @@ func TestPerListenerTopicRouting(t *testing.T) {
 		t.Errorf("Expected empty listener topic for fallback, got '%s'", msg3.Topic)
 	}
 }
+
+func TestCreateOTLPListeners(t *testing.T) {
+	for _, proto := range []string{"otlp", "otlp_http", "otlp_https", "otlp_grpc"} {
+		l, err := createListener(config.ListenerConfig{
+			Name:  "test-" + proto,
+			Proto: proto,
+			Bind:  "127.0.0.1",
+		})
+		if err != nil {
+			t.Fatalf("createListener(%q) failed: %v", proto, err)
+		}
+		if l == nil {
+			t.Fatalf("createListener(%q) returned nil listener", proto)
+		}
+	}
+}

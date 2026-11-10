@@ -1,0 +1,32 @@
+{
+  "brokers": ["127.0.0.1:9092"],
+  "topic": "rb_monitor",
+  "async": true,
+  "batch_size": 500,
+  "batch_timeout_ms": 10,
+  "listeners": [
+    {
+      "name": "opentelemetry-collector",
+      "proto": "otlp",
+      "bind": "0.0.0.0",
+      "metrics_topic": "rb_monitor",
+      "logs_topic": "rb_syslog",
+      "traces_topic": "rb_trace",
+      "kv_extract": true,
+      "cef_extract": true,
+      "schema_standardization": true,
+      "allowed_ips": [
+        "127.0.0.1",
+        "10.0.0.0/8",
+        "192.168.0.0/16"
+      ],
+      "enrichment_key": "sensor_ip",
+      "enrichment_map": {
+        "10.20.20.10": {
+          "sensor_uuid": "bd2fe2c3-d0ff-4c27-aef9-122b698239b9",
+          "sensor_name": "k8s-otel-agent-01"
+        }
+      }
+    }
+  ]
+}

@@ -32,6 +32,13 @@ This repository provides two high-performance streaming daemons for the redBorde
   - **SPAN Port Mode (`span_port`)**: Configurable per-listener boolean. When enabled (`"span_port": true`), ingress MAC addresses are prioritized over post-routed gateway MACs (`postDestinationMacAddress`), matching mirrored SPAN port tap behavior.
   - **Observation ID Enrichment (`observation_domain_id` / `observations_id`)**: Extracts NetFlow v9 Source ID and IPFIX Observation Domain ID into `observation_domain_id`. Supports hierarchical enrichment lookup matching both flat `<ip>:<observation_id>` keys and nested Chef `observations_id` maps.
   - **Field Exclusion (`exclude_fields`)**: Allows dropping specified flow fields from the emitted JSON records before Kafka serialization.
+- **Native OpenTelemetry (OTLP) Receiver (`proto: "otlp"`, `"otlp_http"`, `"otlp_https"`, `"otlp_grpc"`)**:
+  - **Dual Transport (`:4318` HTTP/S & `:4317` gRPC)**: Specifying `"proto": "otlp"` automatically starts both the OTLP/HTTP (`:4318`, supporting `application/x-protobuf` and `application/json` with GZIP/ZLIB/Deflate decompression) and OTLP/gRPC (`:4317`, supporting Protobuf and GZIP) receivers.
+  - **Signal-Based Topic Routing**: Automatically distinguishes OpenTelemetry signals and routes flattened JSON records to dedicated topics:
+    - **Metrics** (`/v1/metrics` / `MetricsService`) $\to$ `rb_monitor` (configurable via `metrics_topic`; unpacks Gauge, Sum, Histogram, ExponentialHistogram, and Summary data points).
+    - **Logs** (`/v1/logs` / `LogsService`) $\to$ `rb_syslog` (configurable via `logs_topic`; supports KV/CEF/Regex extraction and schema standardization).
+    - **Traces** (`/v1/traces` / `TraceService`) $\to$ `rb_trace` (configurable via `traces_topic`; emits flattened spans with `trace_id`, `span_id`, `parent_span_id`, `duration_ms`, and status).
+  - **Automatic Resource & Attribute Flattening**: Merges OTel `resource.attributes` (mapping `host.name` to `hostname`), `scope` metadata, and signal attributes into flat top-level JSON keys with `sensor_ip` and `/rbdata/<sensor_uuid>/v1/...` path enrichment.
 - **IP Security & Subnet Filtering**: Granular IP allowlisting (`allowed_ips`) and blacklisting (`blacklist_ips`) supporting single IPs and CIDR subnet blocks globally or per listener.
 - **Message Splitting & Field Extraction**: Extract structured data from raw log strings using Key-Value parsing (`kv_extract`), CEF security headers (`cef_extract`), or custom named Regex patterns (`regex_patterns`).
 - **Schema Standardization**: Map vendor-specific log keys (e.g., `src`, `srcip`, `source_ip`) to unified redBorder schema keys (`src_ip`, `dst_ip`, `src_port`, `dst_port`, `transport`, `username`) automatically via `schema_standardization`.
@@ -159,6 +166,25 @@ This repository provides two high-performance streaming daemons for the redBorde
           "sensor_name": "switch-core-01"
         }
       }
+    },
+    {
+      "name": "opentelemetry-collector",
+      "proto": "otlp",
+      "bind": "0.0.0.0",
+      "metrics_topic": "rb_monitor",
+      "logs_topic": "rb_syslog",
+      "traces_topic": "rb_trace",
+      "kv_extract": true,
+      "cef_extract": true,
+      "schema_standardization": true,
+      "allowed_ips": ["10.0.0.0/8", "192.168.0.0/16"],
+      "enrichment_key": "sensor_ip",
+      "enrichment_map": {
+        "10.20.20.10": {
+          "sensor_uuid": "bd2fe2c3-d0ff-4c27-aef9-122b698239b9",
+          "sensor_name": "linux-otel-agent-01"
+        }
+      }
     }
   ]
 }
@@ -211,6 +237,92 @@ When `enrichment_map` is configured on a flow listener:
 4. `"default"` entry in `enrichment_map`
 
 *If an exporter IP is defined directly without `observations_id` (e.g. `"10.1.50.20": { "sensor_uuid": "...", "sensor_name": "..." }`), it applies cleanly to all flows from that sensor IP without any special configuration needed.*
+
+#### OpenTelemetry (`otlp`) Emitted Schemas & Client Configuration
+
+When `"proto": "otlp"` is configured, `x2kafka` listens on both **HTTP (`:4318`)** and **gRPC (`:4317`)** (or individually via `"proto": "otlp_http"`, `"otlp_https"`, `"otlp_grpc"`).
+
+##### Emitted Metric JSON (`rb_monitor`)
+```json
+{
+  "type": "otel_metric",
+  "timestamp": 1730000000,
+  "timestamp_ns": 1730000000000000000,
+  "sensor_ip": "10.20.20.10",
+  "hostname": "web-prod-01",
+  "host.name": "web-prod-01",
+  "service.name": "checkout-api",
+  "scope_name": "otelcol/hostmetrics",
+  "metric_name": "system.cpu.utilization",
+  "metric_type": "gauge",
+  "metric_unit": "1",
+  "value": 0.42,
+  "cpu": "0",
+  "state": "user",
+  "sensor_uuid": "bd2fe2c3-d0ff-4c27-aef9-122b698239b9",
+  "sensor_name": "linux-otel-agent-01"
+}
+```
+
+##### Emitted Log JSON (`rb_syslog`)
+```json
+{
+  "type": "otel_log",
+  "timestamp": 1730000010,
+  "timestamp_ns": 1730000010000000000,
+  "sensor_ip": "10.20.20.10",
+  "hostname": "fw-01",
+  "service.name": "sshd",
+  "severity": "WARN",
+  "severity_number": 13,
+  "message": "action=denied srcip=10.1.2.3 dstip=192.168.1.10 user=admin",
+  "src_ip": "10.1.2.3",
+  "dst_ip": "192.168.1.10",
+  "username": "admin",
+  "trace_id": "0102030405060708090a0b0c0d0e0f10",
+  "span_id": "0102030405060708"
+}
+```
+
+##### Example Remote Agent Config (`/etc/otelcol-contrib/config.yaml`)
+```yaml
+receivers:
+  hostmetrics:
+    collection_interval: 30s
+    scrapers:
+      cpu: {}
+      memory: {}
+      disk: {}
+      filesystem: {}
+      load: {}
+      network: {}
+  filelog:
+    include: [/var/log/messages, /var/log/syslog, /var/log/secure, /var/log/auth.log]
+    start_at: end
+
+processors:
+  resourcedetection:
+    detectors: [env, system]
+  batch:
+    timeout: 5s
+
+exporters:
+  otlp/x2kafka:
+    endpoint: "<X2KAFKA_MANAGER_IP>:4317"
+    tls:
+      insecure: true
+
+service:
+  pipelines:
+    metrics:
+      receivers: [hostmetrics]
+      processors: [resourcedetection, batch]
+      exporters: [otlp/x2kafka]
+    logs:
+      receivers: [filelog]
+      processors: [resourcedetection, batch]
+      exporters: [otlp/x2kafka]
+```
 
 
 ### 2. `kafka2x` Egress Config (`/etc/kafka2x/config.json`)
