@@ -88,6 +88,9 @@ type ListenerConfig struct {
 	SpanPort             bool                              `json:"span_port,omitempty"`             // Mirror/SPAN port mode (prefers ingress MACs)
 	ApplicationsFile     string                            `json:"applications_file,omitempty"`     // Path to redBorder applications mapping file
 	HostsPath            string                            `json:"hosts_path,omitempty"`            // Path to redBorder objects directory (e.g. /etc/objects)
+	MetricsTopic         string                            `json:"metrics_topic,omitempty"`         // Target Kafka topic for OTLP metrics (default "rb_monitor")
+	LogsTopic            string                            `json:"logs_topic,omitempty"`            // Target Kafka topic for OTLP logs (default "rb_vault")
+	TracesTopic          string                            `json:"traces_topic,omitempty"`          // Target Kafka topic for OTLP traces (disabled by default unless set)
 }
 
 // LoadConfig reads and parses a JSON config file.
@@ -153,7 +156,11 @@ func LoadConfig(filename string) (*Config, error) {
 			l.Mode = "line"
 		}
 		if l.MaxMsgSize <= 0 {
-			l.MaxMsgSize = 65536
+			if strings.HasPrefix(l.Proto, "otlp") || strings.Contains(l.Proto, "otlp") {
+				l.MaxMsgSize = 4 * 1024 * 1024
+			} else {
+				l.MaxMsgSize = 65536
+			}
 		}
 		if l.EnrichmentKey == "" {
 			l.EnrichmentKey = "sensor_uuid"
@@ -186,7 +193,7 @@ func LoadConfig(filename string) (*Config, error) {
 			l.HostsPath = cfg.HostsPath
 		}
 
-		// Set default ports and topics for flow protocols if unset
+		// Set default ports and topics for flow and OTLP protocols if unset
 		switch l.Proto {
 		case "flow", "netflow", "netflow_udp", "ipfix":
 			if l.Port == 0 {
@@ -202,9 +209,11 @@ func LoadConfig(filename string) (*Config, error) {
 			if l.Topic == "" {
 				l.Topic = "rb_flow"
 			}
+		case "otlp", "otlp_http", "otlp_https", "otlp_grpc":
+			applyOTLPDefaults(&l)
 		}
 
-		// Support "syslog" (UDP + TCP), "snmptrap" (UDP + TCP), or comma-separated protos (e.g. "syslog_udp,syslog_tcp")
+		// Support "syslog" (UDP + TCP), "snmptrap" (UDP + TCP), "otlp" (HTTP + gRPC), or comma-separated protos (e.g. "syslog_udp,syslog_tcp")
 		if l.Proto == "syslog" {
 			udpL := l
 			udpL.Name = l.Name + "-udp"
@@ -225,6 +234,28 @@ func LoadConfig(filename string) (*Config, error) {
 			tcpL.Proto = "snmptrap_tcp"
 
 			expandedListeners = append(expandedListeners, udpL, tcpL)
+		} else if l.Proto == "otlp" {
+			httpL := l
+			httpL.Name = l.Name + "-http"
+			httpL.Proto = "otlp_http"
+
+			grpcL := l
+			grpcL.Name = l.Name + "-grpc"
+			grpcL.Proto = "otlp_grpc"
+
+			switch l.Port {
+			case 0, 4317:
+				grpcL.Port = 4317
+				httpL.Port = 4318
+			case 4318:
+				httpL.Port = 4318
+				grpcL.Port = 4317
+			default:
+				grpcL.Port = l.Port
+				httpL.Port = l.Port + 1
+			}
+
+			expandedListeners = append(expandedListeners, httpL, grpcL)
 		} else if strings.Contains(l.Proto, ",") {
 			protos := strings.Split(l.Proto, ",")
 			for _, p := range protos {
@@ -235,6 +266,9 @@ func LoadConfig(filename string) (*Config, error) {
 				subL := l
 				subL.Name = l.Name + "-" + pTrim
 				subL.Proto = pTrim
+				if strings.HasPrefix(pTrim, "otlp") {
+					applyOTLPDefaults(&subL)
+				}
 				expandedListeners = append(expandedListeners, subL)
 			}
 		} else {
@@ -244,4 +278,34 @@ func LoadConfig(filename string) (*Config, error) {
 	cfg.Listeners = expandedListeners
 
 	return cfg, nil
+}
+
+func applyOTLPDefaults(l *ListenerConfig) {
+	if l.MetricsTopic == "" {
+		if l.Topic != "" {
+			l.MetricsTopic = l.Topic
+		} else {
+			l.MetricsTopic = "rb_monitor"
+		}
+	}
+	if l.LogsTopic == "" {
+		if l.Topic != "" {
+			l.LogsTopic = l.Topic
+		} else {
+			l.LogsTopic = "rb_vault"
+		}
+	}
+	if l.TracesTopic == "" && l.Topic != "" {
+		l.TracesTopic = l.Topic
+	}
+	switch l.Proto {
+	case "otlp_http", "otlp_https":
+		if l.Port == 0 {
+			l.Port = 4318
+		}
+	case "otlp_grpc":
+		if l.Port == 0 {
+			l.Port = 4317
+		}
+	}
 }
