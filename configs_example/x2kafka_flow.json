@@ -48,6 +48,8 @@
       "port": 6343,
       "topic": "sflow",
       "renormalize_sampling": true,
+      "ndpi": true,
+      "ndpi_cache_ttl_seconds": 600,
       "allowed_ips": ["10.0.0.0/8"],
       "enrichment_key": "sensor_ip",
       "enrichment_map": {
