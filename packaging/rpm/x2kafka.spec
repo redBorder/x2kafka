@@ -4,8 +4,12 @@ Name: x2kafka
 License: GNU AGPLv3
 URL: https://github.com/redBorder/x2kafka
 Source0: %{name}-%{version}.tar.gz
+# nDPI is built as a static library and linked into x2kafka (sFlow application classification)
+%{!?ndpi_version: %define ndpi_version 6.0}
+Source1: nDPI-%{ndpi_version}.tar.gz
 
 BuildRequires: golang
+BuildRequires: gcc, make, autoconf, automake, libtool, pkgconfig, which
 
 Summary: Convert data events from Unix sockets, FIFOs, Syslog or HTTP to Kafka
 Group: Development/Libraries/C and C++
@@ -24,10 +28,26 @@ Forward data events from Kafka topics to HTTP/REST endpoints with batching and c
 
 %prep
 %setup -qn %{name}-%{version}
+mkdir -p _ndpi_build
+tar -xzf %{SOURCE1} -C _ndpi_build --strip-components=1
 
 %build
-go build -ldflags "-X main.version=%{version} -X main.revision=%{release}" -o x2kafka ./cmd/x2kafka
 go build -ldflags "-X main.version=%{version} -X main.revision=%{release}" -o kafka2x ./cmd/kafka2x
+
+%define ndpi_prefix %{_builddir}/%{name}-%{version}/_ndpi_inst
+cd _ndpi_build
+./autogen.sh
+./configure --prefix=%{ndpi_prefix} --enable-static --disable-shared --with-only-libndpi
+make %{?_smp_mflags}
+make install
+cd ..
+# Make sure only the static libndpi.a can be picked up by the linker
+rm -f %{ndpi_prefix}/lib/*.so* %{ndpi_prefix}/lib64/*.so*
+
+export CGO_ENABLED=1
+export CGO_CFLAGS="-I%{ndpi_prefix}/include"
+export CGO_LDFLAGS="-L%{ndpi_prefix}/lib -L%{ndpi_prefix}/lib64 -lndpi -lm -lpthread"
+go build -tags ndpi -ldflags "-X main.version=%{version} -X main.revision=%{release}" -o x2kafka ./cmd/x2kafka
 
 %install
 mkdir -p %{buildroot}/usr/bin
