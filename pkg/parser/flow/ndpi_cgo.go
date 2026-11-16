@@ -97,7 +97,8 @@ static const char *x2k_ndpi_classify(struct ndpi_detection_module_struct *mod,
         if (*confidence_out == X2K_APP_UNKNOWN) *confidence_out = X2K_APP_BY_PORT;
     }
 
-    ndpi_free_flow_data(flow);
+    // ndpi_flow_free() also releases the flow's dynamic members; calling
+    // ndpi_free_flow_data() before it frees them twice.
     ndpi_flow_free(flow);
     return name;
 }
