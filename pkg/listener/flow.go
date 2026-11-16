@@ -70,6 +70,8 @@ func NewFlowListener(cfg config.ListenerConfig) *FlowListener {
 		SpanPort:            cfg.SpanPort,
 		ApplicationsFile:    cfg.ApplicationsFile,
 		HostsPath:           cfg.HostsPath,
+		NDPI:                cfg.NDPI,
+		NDPICacheTTL:        time.Duration(cfg.NDPICacheTTLSeconds) * time.Second,
 	}
 
 	return &FlowListener{
@@ -113,6 +115,10 @@ func (f *FlowListener) Start(ctx context.Context, msgChan chan<- *kafka.Message)
 	go f.listenLoop(msgChan)
 
 	log.Printf("[%s] Flow listener started on %s (proto: %s, topic: %s)", f.Name(), addr.String(), f.cfg.Proto, f.cfg.Topic)
+	if f.cfg.NDPI {
+		_, ndpiInfo := flow.NDPIStatus()
+		log.Printf("[%s] nDPI application classification for sFlow: %s", f.Name(), ndpiInfo)
+	}
 	return nil
 }
 
@@ -267,6 +273,7 @@ func (f *FlowListener) Stop() error {
 		_ = f.udpConn.Close()
 	}
 	f.wg.Wait()
+	f.parser.Close()
 	log.Printf("[%s] Flow listener stopped", f.Name())
 	return nil
 }

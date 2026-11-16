@@ -212,6 +212,7 @@ func dissectIPv4(b []byte, rec *JSONFlowRecord) {
 	if ihl < 20 || len(b) < ihl {
 		return
 	}
+	rec.l3 = b
 
 	rec.L4Proto = b[9]
 	rec.TOS = b[1]
@@ -230,6 +231,7 @@ func dissectIPv6(b []byte, rec *JSONFlowRecord) {
 	}
 
 	rec.IPProtocolVersion = 6
+	rec.l3 = b
 	rec.L4Proto = b[6]
 	rec.SrcTTL = b[7] // Hop Limit
 	rec.LanIP = net.IP(b[8:24]).String()
