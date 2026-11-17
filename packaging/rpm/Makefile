@@ -8,6 +8,13 @@ MOCK_CONFIG?=default
 
 RESULT_DIR?=pkgs
 
+# NDPI=1 builds x2kafka with nDPI (sFlow application classification): the
+# release tarball is downloaded and the spec (--with ndpi) links it statically.
+NDPI?=		0
+NDPI_VERSION?=	6.0
+NDPI_TARBALL=	SOURCES/nDPI-$(NDPI_VERSION).tar.gz
+NDPI_URL?=	https://github.com/ntop/nDPI/archive/refs/tags/$(NDPI_VERSION).tar.gz
+
 all: rpm
 
 SOURCES:
@@ -21,7 +28,21 @@ archive: SOURCES
 		--transform 's/^\./$(PACKAGE_NAME)-$(VERSION)/' \
 		-czf packaging/rpm/SOURCES/$(PACKAGE_NAME)-$(VERSION).tar.gz .
 
-build_prepare: archive
+ndpi: $(NDPI_TARBALL)
+
+$(NDPI_TARBALL): | SOURCES
+	curl -fsSL -o $@.tmp $(NDPI_URL)
+	mv $@.tmp $@
+
+ifeq ($(NDPI),1)
+MOCK_NDPI_OPTS=	--with ndpi --define "ndpi_version $(NDPI_VERSION)"
+PREPARE_DEPS=	archive ndpi
+else
+MOCK_NDPI_OPTS=
+PREPARE_DEPS=	archive
+endif
+
+build_prepare: $(PREPARE_DEPS)
 	mkdir -p $(RESULT_DIR)
 	rm -f $(RESULT_DIR)/$(PACKAGE_NAME)*.rpm $(RESULT_DIR)/kafka2x*.rpm
 
@@ -30,6 +51,7 @@ srpm: build_prepare
 		-r $(MOCK_CONFIG) \
 		--define "__version $(VERSION)" \
 		--define "__release $(BUILD_NUMBER)" \
+		$(MOCK_NDPI_OPTS) \
 		--resultdir=$(RESULT_DIR) \
 		--buildsrpm \
 		--spec=x2kafka.spec \
@@ -41,6 +63,7 @@ rpm: srpm
 		-r $(MOCK_CONFIG) \
 		--define "__version $(VERSION)"\
 		--define "__release $(BUILD_NUMBER)"\
+		$(MOCK_NDPI_OPTS) \
 		--resultdir=$(RESULT_DIR) \
 		--rebuild $(RESULT_DIR)/$(PACKAGE_NAME)*.src.rpm
 	@echo "======= Binary RPMs now available in $(RESULT_DIR) ======="

@@ -30,7 +30,7 @@ This repository provides two high-performance streaming daemons for the redBorde
   - **Output Schema & `sensor_ip`**: Emits normalized flow JSON with `sensor_ip` automatically populated with the exporter's IP address, alongside `lan_ip`, `wan_ip`, `lan_l4_port`, `wan_l4_port`, `l4_proto`, `bytes`, `pkts`, and timestamps.
   - **Sampling Renormalization (`renormalize_sampling`)**: Automatically scales byte and packet volumes by the flow sampling rate so downstream metrics reflect true wire volume.
   - **SPAN Port Mode (`span_port`)**: Configurable per-listener boolean. When enabled (`"span_port": true`), ingress MAC addresses are prioritized over post-routed gateway MACs (`postDestinationMacAddress`), matching mirrored SPAN port tap behavior.
-  - **sFlow Application Classification (`ndpi`)**: sFlow samples carry no application ID, so `application_id_name`, `application_id` and `engine_id_name` are derived from the sampled packet. With `"ndpi": true` (per listener, or global for every flow listener) each sample is classified with [nDPI](https://github.com/ntop/nDPI) and reported as the lower-case nDPI name with engine `13` (e.g. `"application_id_name": "youtube"`, `"application_id": "13:124"`). Because sFlow delivers isolated, truncated packets, x2kafka uses, in order: nDPI payload detection, a detection remembered for the same server IP/port (`ndpi_cache_ttl_seconds`, default 600), nDPI's guess by IP range or port, and finally the L4 port mapping from the applications dictionary (`applications_file`, engine `3`, e.g. `"3:443"`). The port mapping is always applied to sFlow when the dictionary is loaded, also with nDPI off. nDPI needs a binary built with the `ndpi` tag (the RPM links nDPI statically; `x2kafka -version` shows it); otherwise `"ndpi": true` logs a warning and the port mapping is used.
+  - **sFlow Application Classification (`ndpi`)**: sFlow samples carry no application ID, so `application_id_name`, `application_id` and `engine_id_name` are derived from the sampled packet. With `"ndpi": true` (per listener, or global for every flow listener) each sample is classified with [nDPI](https://github.com/ntop/nDPI) and reported as the lower-case nDPI name with engine `13` (e.g. `"application_id_name": "youtube"`, `"application_id": "13:124"`). Because sFlow delivers isolated, truncated packets, x2kafka uses, in order: nDPI payload detection, a detection remembered for the same server IP/port (`ndpi_cache_ttl_seconds`, default 600), nDPI's guess by IP range or port, and finally the L4 port mapping from the applications dictionary (`applications_file`, engine `3`, e.g. `"3:443"`). The port mapping is always applied to sFlow when the dictionary is loaded, also with nDPI off. nDPI needs a binary built with the `ndpi` tag (`make rpm NDPI=1` links nDPI statically into the RPM; `x2kafka -version` shows it); otherwise `"ndpi": true` logs a warning and the port mapping is used.
   - **Observation ID Enrichment (`observation_domain_id` / `observations_id`)**: Extracts NetFlow v9 Source ID and IPFIX Observation Domain ID into `observation_domain_id`. Supports hierarchical enrichment lookup matching both flat `<ip>:<observation_id>` keys and nested Chef `observations_id` maps.
   - **Field Exclusion (`exclude_fields`)**: Allows dropping specified flow fields from the emitted JSON records before Kafka serialization.
 - **Native OpenTelemetry (OTLP) Receiver (`proto: "otlp"`, `"otlp_http"`, `"otlp_https"`, `"otlp_grpc"`)**:
@@ -541,7 +541,12 @@ Build packages using mock:
 make rpm
 ```
 
-The `x2kafka` RPM is built with nDPI support: `packaging/rpm/Makefile` downloads the nDPI release tarball (`NDPI_VERSION`, default 6.0) and the spec compiles it as a static library linked into the binary, so nodes need no `libndpi` package.
+By default the `x2kafka` RPM is built without nDPI. To build it with nDPI support (sFlow application classification):
+```bash
+make rpm NDPI=1                    # nDPI 6.0
+make rpm NDPI=1 NDPI_VERSION=4.14  # another nDPI release
+```
+`packaging/rpm/Makefile` then downloads the nDPI release tarball into `packaging/rpm/SOURCES` (override the location with `NDPI_URL`) and builds the spec `--with ndpi`, which compiles nDPI as a static library linked into the binary, so nodes need no `libndpi` package.
 
 ---
 
