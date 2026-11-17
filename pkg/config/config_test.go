@@ -55,6 +55,7 @@ func TestLoadConfig(t *testing.T) {
 		"../../configs_example/x2kafka_http2k.json",
 		"../../configs_example/x2kafka_snmptrap.json",
 		"../../configs_example/x2kafka_flow.json",
+		"../../configs_example/x2kafka_otlp.json",
 	} {
 		mCfg, err := LoadConfig(path)
 		if err != nil {
@@ -103,6 +104,75 @@ func TestLoadConfig_HomeNetsInheritance(t *testing.T) {
 	}
 	if len(cfg.Listeners[1].HomeNets) != 1 || cfg.Listeners[1].HomeNets[0] != "172.16.0.0/12" {
 		t.Errorf("Expected overridden home_nets, got %v", cfg.Listeners[1].HomeNets)
+	}
+}
+
+func TestLoadConfig_OTLPExpansion(t *testing.T) {
+	content := `{
+		"brokers": ["127.0.0.1:9092"],
+		"listeners": [
+			{
+				"name": "otel-collector",
+				"proto": "otlp",
+				"bind": "0.0.0.0",
+				"port": 4317
+			},
+			{
+				"name": "otel-custom-http",
+				"proto": "otlp_http",
+				"port": 14318,
+				"metrics_topic": "custom_metrics",
+				"logs_topic": "custom_logs",
+				"traces_topic": "custom_traces"
+			}
+		]
+	}`
+
+	tmpfile, err := os.CreateTemp("", "config_otlp_test_*.json")
+	if err != nil {
+		t.Fatalf("Failed to create temp file: %v", err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	if _, err := tmpfile.Write([]byte(content)); err != nil {
+		t.Fatalf("Failed to write temp file: %v", err)
+	}
+	tmpfile.Close()
+
+	cfg, err := LoadConfig(tmpfile.Name())
+	if err != nil {
+		t.Fatalf("LoadConfig failed: %v", err)
+	}
+
+	if len(cfg.Listeners) != 3 {
+		t.Fatalf("Expected 3 expanded listeners (otlp_http, otlp_grpc, otel-custom-http), got %d", len(cfg.Listeners))
+	}
+
+	httpL := cfg.Listeners[0]
+	if httpL.Name != "otel-collector-http" || httpL.Proto != "otlp_http" || httpL.Port != 4318 {
+		t.Errorf("Expected otel-collector-http on port 4318, got name=%q proto=%q port=%d", httpL.Name, httpL.Proto, httpL.Port)
+	}
+	if httpL.MetricsTopic != "rb_monitor" || httpL.LogsTopic != "rb_vault" || httpL.TracesTopic != "" {
+		t.Errorf("Unexpected default signal topics: metrics=%q logs=%q traces=%q", httpL.MetricsTopic, httpL.LogsTopic, httpL.TracesTopic)
+	}
+	if httpL.MaxMsgSize != 4*1024*1024 {
+		t.Errorf("Expected default OTLP MaxMsgSize 4MB, got %d", httpL.MaxMsgSize)
+	}
+
+	grpcL := cfg.Listeners[1]
+	if grpcL.Name != "otel-collector-grpc" || grpcL.Proto != "otlp_grpc" || grpcL.Port != 4317 {
+		t.Errorf("Expected otel-collector-grpc on port 4317, got name=%q proto=%q port=%d", grpcL.Name, grpcL.Proto, grpcL.Port)
+	}
+	if grpcL.MetricsTopic != "rb_monitor" || grpcL.LogsTopic != "rb_vault" || grpcL.TracesTopic != "" {
+		t.Errorf("Unexpected default signal topics on gRPC: metrics=%q logs=%q traces=%q", grpcL.MetricsTopic, grpcL.LogsTopic, grpcL.TracesTopic)
+	}
+
+	customL := cfg.Listeners[2]
+	if customL.Proto != "otlp_http" || customL.Port != 14318 {
+		t.Errorf("Expected custom otlp_http on port 14318, got proto=%q port=%d", customL.Proto, customL.Port)
+	}
+	if customL.MetricsTopic != "custom_metrics" || customL.LogsTopic != "custom_logs" || customL.TracesTopic != "custom_traces" {
+		t.Errorf("Expected custom signal topics, got metrics=%q logs=%q traces=%q", customL.MetricsTopic, customL.LogsTopic, customL.TracesTopic)
 	}
 }
 

@@ -94,6 +94,8 @@ func createListener(lcfg config.ListenerConfig) (listener.Listener, error) {
 		return listener.NewFlowListener(lcfg), nil
 	case "http", "https":
 		return listener.NewHTTPListener(lcfg), nil
+	case "otlp", "otlp_http", "otlp_https", "otlp_grpc":
+		return listener.NewOTLPListener(lcfg), nil
 	default:
 		return nil, fmt.Errorf("unsupported proto '%s'", lcfg.Proto)
 	}

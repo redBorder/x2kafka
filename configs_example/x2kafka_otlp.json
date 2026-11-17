@@ -1,0 +1,75 @@
+{
+  "brokers": ["127.0.0.1:9092"],
+  "topic": "rb_monitor",
+  "async": true,
+  "batch_size": 500,
+  "batch_timeout_ms": 10,
+  "listeners": [
+    {
+      "name": "opentelemetry-grpc",
+      "proto": "otlp_grpc",
+      "bind": "0.0.0.0",
+      "port": 4317,
+      "metrics_topic": "rb_monitor",
+      "logs_topic": "rb_vault",
+      "kv_extract": true,
+      "cef_extract": true,
+      "schema_standardization": true,
+      "allowed_ips": [
+        "127.0.0.1",
+        "10.0.0.0/8",
+        "192.168.0.0/16"
+      ],
+      "enrichment_key": "sensor_ip",
+      "enrichment_map": {
+        "10.20.20.10": {
+          "metrics": {
+            "sensor_uuid": "bd2fe2c3-d0ff-4c27-aef9-122b698239b9",
+            "sensor_name": "snmp-monitor-01"
+          },
+          "logs": {
+            "sensor_uuid": "e90902da-cec3-4020-9eaf-708ee32f86ac",
+            "sensor_name": "vault-sensor-01"
+          },
+          "traces": {
+            "sensor_uuid": "f11902da-cec3-4020-9eaf-708ee32f8699",
+            "sensor_name": "trace-sensor-01"
+          }
+        }
+      }
+    },
+    {
+      "name": "opentelemetry-http",
+      "proto": "otlp_http",
+      "bind": "0.0.0.0",
+      "port": 4318,
+      "metrics_topic": "rb_monitor",
+      "logs_topic": "rb_vault",
+      "kv_extract": true,
+      "cef_extract": true,
+      "schema_standardization": true,
+      "allowed_ips": [
+        "127.0.0.1",
+        "10.0.0.0/8",
+        "192.168.0.0/16"
+      ],
+      "enrichment_key": "sensor_ip",
+      "enrichment_map": {
+        "10.20.20.10": {
+          "metrics": {
+            "sensor_uuid": "bd2fe2c3-d0ff-4c27-aef9-122b698239b9",
+            "sensor_name": "snmp-monitor-01"
+          },
+          "logs": {
+            "sensor_uuid": "e90902da-cec3-4020-9eaf-708ee32f86ac",
+            "sensor_name": "vault-sensor-01"
+          },
+          "traces": {
+            "sensor_uuid": "f11902da-cec3-4020-9eaf-708ee32f8699",
+            "sensor_name": "trace-sensor-01"
+          }
+        }
+      }
+    }
+  ]
+}
