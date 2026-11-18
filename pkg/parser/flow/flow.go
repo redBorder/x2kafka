@@ -14,8 +14,9 @@ type FlowParser struct {
 	cfg         *ParserConfig
 	cache       *TemplateCache
 	homeChecker *HomeNetChecker
-	ndpi        AppClassifier   // nil unless nDPI was requested and is compiled in
-	appCache    *serverAppCache // nDPI detections remembered per server endpoint
+	sensorHome  map[string]*HomeNetChecker // per sensor checkers, they win over homeChecker
+	ndpi        AppClassifier              // nil unless nDPI was requested and is compiled in
+	appCache    *serverAppCache            // nDPI detections remembered per server endpoint
 }
 
 func newFlowParser(cfg *ParserConfig, cache *TemplateCache) *FlowParser {
@@ -30,6 +31,7 @@ func newFlowParser(cfg *ParserConfig, cache *TemplateCache) *FlowParser {
 		cfg:         cfg,
 		cache:       cache,
 		homeChecker: checker,
+		sensorHome:  newSensorHomeCheckers(cfg),
 	}
 	if cfg != nil && cfg.NDPI {
 		classifier, err := NewNDPIClassifier()
@@ -41,6 +43,52 @@ func newFlowParser(cfg *ParserConfig, cache *TemplateCache) *FlowParser {
 		}
 	}
 	return p
+}
+
+// newSensorHomeCheckers builds one HomeNetChecker per sensor with its own home_nets.
+// A sensor with an invalid CIDR keeps the listener home_nets instead of losing the orientation.
+func newSensorHomeCheckers(cfg *ParserConfig) map[string]*HomeNetChecker {
+	if cfg == nil || len(cfg.SensorHomeNets) == 0 {
+		return nil
+	}
+	checkers := make(map[string]*HomeNetChecker, len(cfg.SensorHomeNets))
+	for key, subnets := range cfg.SensorHomeNets {
+		if len(subnets) == 0 {
+			continue
+		}
+		checker, err := NewHomeNetChecker(subnets)
+		if err != nil {
+			log.Printf("[flow] ignoring home_nets of sensor %s, using the listener ones: %v", key, err)
+			continue
+		}
+		checkers[key] = checker
+	}
+	return checkers
+}
+
+// homeCheckerFor returns the home_nets checker of the sensor that exported rec, looked up
+// like the enrichment_map (exporter:observation_id, sensor IP, exporter IP, "default").
+// Falls back to the listener home_nets when the sensor has none of its own.
+func (p *FlowParser) homeCheckerFor(rec *JSONFlowRecord, exporterIP string) *HomeNetChecker {
+	if len(p.sensorHome) > 0 {
+		if rec.ObservationDomainID != nil {
+			if c, ok := p.sensorHome[fmt.Sprintf("%s:%d", exporterIP, *rec.ObservationDomainID)]; ok {
+				return c
+			}
+		}
+		if rec.SensorIP != "" {
+			if c, ok := p.sensorHome[rec.SensorIP]; ok {
+				return c
+			}
+		}
+		if c, ok := p.sensorHome[exporterIP]; ok {
+			return c
+		}
+		if c, ok := p.sensorHome["default"]; ok {
+			return c
+		}
+	}
+	return p.homeChecker
 }
 
 // Close releases the nDPI detection module, if any. The parser must not be used afterwards.
@@ -130,10 +178,8 @@ func (p *FlowParser) Parse(data []byte, exporterIP string) ([]*JSONFlowRecord, e
 		return nil, err
 	}
 
-	if p.homeChecker != nil {
-		for _, rec := range records {
-			p.homeChecker.OrientFlow(rec)
-		}
+	for _, rec := range records {
+		p.homeCheckerFor(rec, exporterIP).OrientFlow(rec)
 	}
 
 	return records, nil

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -489,5 +490,38 @@ func TestFlowListenerSFlowFilteringAndEnrichment(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timeout waiting for sflow message")
+	}
+}
+
+func TestSensorHomeNets(t *testing.T) {
+	got := sensorHomeNets(map[string]map[string]interface{}{
+		"10.0.0.1": {"sensor_name": "a", "home_nets": []interface{}{"192.168.0.0/16", "10.0.0.0/8"}},
+		"10.0.0.2": {"sensor_name": "b", "home_nets": "172.16.0.0/12"},
+		"10.0.0.3": {"sensor_name": "c"},
+		"10.0.0.4": {
+			"observations_id": map[string]interface{}{
+				"100":     map[string]interface{}{"enrichment": map[string]interface{}{"home_nets": []interface{}{"10.1.0.0/16"}}},
+				"default": map[string]interface{}{"home_nets": []interface{}{"10.2.0.0/16"}},
+			},
+		},
+	})
+
+	want := map[string][]string{
+		"10.0.0.1":     {"192.168.0.0/16", "10.0.0.0/8"},
+		"10.0.0.2":     {"172.16.0.0/12"},
+		"10.0.0.4:100": {"10.1.0.0/16"},
+		"10.0.0.4":     {"10.2.0.0/16"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("expected %d sensors with home_nets, got %d: %v", len(want), len(got), got)
+	}
+	for key, nets := range want {
+		if strings.Join(got[key], ",") != strings.Join(nets, ",") {
+			t.Errorf("sensor %s: expected %v, got %v", key, nets, got[key])
+		}
+	}
+
+	if sensorHomeNets(map[string]map[string]interface{}{"10.0.0.3": {"sensor_name": "c"}}) != nil {
+		t.Errorf("expected nil without any sensor home_nets")
 	}
 }

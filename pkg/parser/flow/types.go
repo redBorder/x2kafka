@@ -11,6 +11,7 @@ type ParserConfig struct {
 	RenormalizeSampling bool
 	ExcludeFields       []string
 	HomeNets            []string
+	SensorHomeNets      map[string][]string // per sensor home_nets, keyed like the enrichment_map ("ip", "ip:observation_id" or "default"); they win over HomeNets
 	SpanPort            bool
 	ApplicationsFile    string
 	HostsPath           string

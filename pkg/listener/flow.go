@@ -28,6 +28,67 @@ type FlowListener struct {
 	wg       sync.WaitGroup
 }
 
+// sensorHomeNets collects the home_nets of each enrichment_map entry, so every
+// sensor orients its flows with its own networks instead of the listener ones. Entries with an
+// f2k style observations_id map are keyed "<ip>:<observation_id>", and their default as "<ip>".
+func sensorHomeNets(enrichmentMap map[string]map[string]interface{}) map[string][]string {
+	out := make(map[string][]string)
+	for key, entry := range enrichmentMap {
+		if nets := homeNetsOf(entry); len(nets) > 0 {
+			out[key] = nets
+		}
+		obsMap, ok := entry["observations_id"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		for obsID, raw := range obsMap {
+			obsEntry, ok := raw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if enrich, ok := obsEntry["enrichment"].(map[string]interface{}); ok {
+				obsEntry = enrich
+			}
+			nets := homeNetsOf(obsEntry)
+			if len(nets) == 0 {
+				continue
+			}
+			if obsID == "default" {
+				if _, ok := out[key]; !ok {
+					out[key] = nets
+				}
+			} else {
+				out[key+":"+obsID] = nets
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// homeNetsOf reads the home_nets of an enrichment entry.
+func homeNetsOf(entry map[string]interface{}) []string {
+	switch v := entry["home_nets"].(type) {
+	case []string:
+		return v
+	case []interface{}:
+		nets := make([]string, 0, len(v))
+		for _, n := range v {
+			if str, ok := n.(string); ok && str != "" {
+				nets = append(nets, str)
+			}
+		}
+		return nets
+	case string:
+		if v != "" {
+			return []string{v}
+		}
+	}
+	return nil
+}
+
 // NewFlowListener creates a new FlowListener instance.
 func NewFlowListener(cfg config.ListenerConfig) *FlowListener {
 	if cfg.Port == 0 {
@@ -67,6 +128,7 @@ func NewFlowListener(cfg config.ListenerConfig) *FlowListener {
 		RenormalizeSampling: renormalize,
 		ExcludeFields:       cfg.ExcludeFields,
 		HomeNets:            homeNets,
+		SensorHomeNets:      sensorHomeNets(cfg.EnrichmentMap),
 		SpanPort:            cfg.SpanPort,
 		ApplicationsFile:    cfg.ApplicationsFile,
 		HostsPath:           cfg.HostsPath,

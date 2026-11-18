@@ -124,6 +124,10 @@ func (d *Decoder) FormatPayloadWithConfigAndTopic(raw []byte, cfg config.Listene
 	if keyValueStr != "" && len(cfg.EnrichmentMap) > 0 {
 		if mappedEnrichment, ok := cfg.EnrichmentMap[keyValueStr]; ok {
 			for k, v := range mappedEnrichment {
+				// home_nets only orient the flows of the sensor, they are not part of the event
+				if k == "home_nets" {
+					continue
+				}
 				doc[k] = v
 			}
 		}

@@ -25,7 +25,7 @@ This repository provides two high-performance streaming daemons for the redBorde
   - **IPFIX / NetFlow v10 (RFC 7011 / 7012)**: Dynamic template decoding with variable-length elements and enterprise Information Elements (`type: "netflowv10"`).
   - **sFlow v5 (sFlow.org)**: Ingests Flow Samples (Format 1) and Expanded Flow Samples (Format 3) on UDP 6343 (`type: "sflow"`).
   - **100% Flat JSON Compatibility**: Drop-in replacement for `f2k` and `redborder-flow-agent`. Emits flat JSON records (no nested objects) for Druid/ClickHouse ingestion, with Cisco NBAR binary applications decoded into string `engine:app` identifiers (e.g. `"3:123"`).
-  - **RedBorder Directional Model A (`home_nets`)**: Evaluates traffic orientation against configured `home_nets` CIDR blocks (defaults to RFC 1918/6598/4193). For downstream flows (WAN $\to$ LAN), `lan_ip` is automatically oriented to the internal host, with `direction` set to `"upstream"`, `"downstream"`, or `"internal"`.
+  - **RedBorder Directional Model A (`home_nets`)**: Evaluates traffic orientation against configured `home_nets` CIDR blocks (defaults to RFC 1918/6598/4193). For downstream flows (WAN $\to$ LAN), `lan_ip` is automatically oriented to the internal host, with `direction` set to `"upstream"`, `"downstream"`, or `"internal"`. `home_nets` can be set globally, per listener or per sensor inside its `enrichment_map` entry (also inside an `observations_id` entry); the most specific one wins. Per sensor `home_nets` only orient the flows of that sensor and are not added to the events.
   - **L7 & Network Layer Metadata**: Decodes HTTP User-Agent (`http_user_agent`), URL (`http_url`), Host (`http_host`), Referer (`http_referer`), human-readable TCP flags (`tcp_flags`, e.g. `"SYN|ACK"`), and TTL (`src_ttl`, `dst_ttl`) from Cisco AVC/NBAR2, IPFIX, and sFlow.
   - **Output Schema & `sensor_ip`**: Emits normalized flow JSON with `sensor_ip` automatically populated with the exporter's IP address, alongside `lan_ip`, `wan_ip`, `lan_l4_port`, `wan_l4_port`, `l4_proto`, `bytes`, `pkts`, and timestamps.
   - **Sampling Renormalization (`renormalize_sampling`)**: Automatically scales byte and packet volumes by the flow sampling rate so downstream metrics reflect true wire volume.
@@ -165,7 +165,8 @@ This repository provides two high-performance streaming daemons for the redBorde
       "enrichment_map": {
         "10.20.20.1": {
           "sensor_uuid": "e55fe2c3-d0ff-4c27-aef9-122b698239e5",
-          "sensor_name": "switch-core-01"
+          "sensor_name": "switch-core-01",
+          "home_nets": ["192.168.10.0/24"]
         }
       }
     },
