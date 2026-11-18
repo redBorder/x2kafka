@@ -31,6 +31,7 @@ type Config struct {
 	MibDirs           []string         `json:"mib_dirs,omitempty"`             // Paths containing SNMP MIB files
 	ApplicationsFile  string           `json:"applications_file,omitempty"`     // Path to redBorder applications mapping file
 	HostsPath         string           `json:"hosts_path,omitempty"`            // Path to redBorder objects directory (e.g. /etc/objects)
+	NDPI              bool             `json:"ndpi,omitempty"`                  // Classify sFlow samples with nDPI on every flow listener
 	Listeners         []ListenerConfig `json:"listeners"`
 	RDKafkaOptions    map[string]string`json:"rdkafka_options,omitempty"`
 }
@@ -91,6 +92,8 @@ type ListenerConfig struct {
 	MetricsTopic         string                            `json:"metrics_topic,omitempty"`         // Target Kafka topic for OTLP metrics (default "rb_monitor")
 	LogsTopic            string                            `json:"logs_topic,omitempty"`            // Target Kafka topic for OTLP logs (default "rb_vault")
 	TracesTopic          string                            `json:"traces_topic,omitempty"`          // Target Kafka topic for OTLP traces (disabled by default unless set)
+  NDPI                 bool                              `json:"ndpi,omitempty"`                  // Classify sFlow samples with nDPI (application_id_name)
+	NDPICacheTTLSeconds  int                               `json:"ndpi_cache_ttl_seconds,omitempty"` // How long an nDPI detection is remembered per server (default 600)
 }
 
 // LoadConfig reads and parses a JSON config file.
@@ -191,6 +194,9 @@ func LoadConfig(filename string) (*Config, error) {
 		}
 		if l.HostsPath == "" && cfg.HostsPath != "" {
 			l.HostsPath = cfg.HostsPath
+		}
+		if cfg.NDPI {
+			l.NDPI = true
 		}
 
 		// Set default ports and topics for flow and OTLP protocols if unset

@@ -11,9 +11,12 @@ type ParserConfig struct {
 	RenormalizeSampling bool
 	ExcludeFields       []string
 	HomeNets            []string
+	SensorHomeNets      map[string][]string // per sensor home_nets, keyed like the enrichment_map ("ip", "ip:observation_id" or "default"); they win over HomeNets
 	SpanPort            bool
 	ApplicationsFile    string
 	HostsPath           string
+	NDPI                bool          // classify sFlow samples with nDPI (needs a build with the ndpi tag)
+	NDPICacheTTL        time.Duration // how long a detection is remembered per server endpoint
 }
 
 // JSONFlowRecord represents the canonical RedBorder flow record emitted to Kafka, matching f2k.
@@ -65,6 +68,8 @@ type JSONFlowRecord struct {
 	SensorIP                string  `json:"sensor_ip,omitempty"`
 	SensorUUID              string  `json:"sensor_uuid,omitempty"`
 	SensorName              string  `json:"sensor_name,omitempty"`
+
+	l3 []byte // sampled packet from the IP header on (sFlow only), dropped after classification
 }
 
 // ToFilteredJSON marshals the flow record to JSON while stripping any fields specified in excludeFields.

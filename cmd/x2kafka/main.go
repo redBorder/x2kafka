@@ -16,6 +16,7 @@ import (
 
 	"x2kafka/pkg/config"
 	"x2kafka/pkg/engine"
+	"x2kafka/pkg/parser/flow"
 )
 
 var (
@@ -141,6 +142,8 @@ func main() {
 
 	if showVer {
 		fmt.Printf("x2kafka version %s (commit %s)\n", version, revision)
+		_, ndpiInfo := flow.NDPIStatus()
+		fmt.Printf("nDPI support: %s\n", ndpiInfo)
 		os.Exit(0)
 	}
 

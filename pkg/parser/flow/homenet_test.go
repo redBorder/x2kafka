@@ -98,3 +98,43 @@ func TestDefaultHomeNets(t *testing.T) {
 		t.Errorf("expected default RFC 1918 to recognize 172.16.x.x as upstream, got '%s'", rec.Direction)
 	}
 }
+
+func TestSensorHomeNetsWinOverListener(t *testing.T) {
+	obs := uint32(100)
+	parser := NewFlowParser(&ParserConfig{
+		HomeNets: []string{"10.0.0.0/8"},
+		SensorHomeNets: map[string][]string{
+			"192.0.2.1":     {"172.16.0.0/12"},
+			"192.0.2.2:100": {"192.168.0.0/16"},
+			"192.0.2.3":     {"not-a-cidr"}, // invalid: keeps the listener home_nets
+		},
+	})
+
+	tests := []struct {
+		name     string
+		exporter string
+		obsID    *uint32
+		lan, wan string
+		wantDir  string
+	}{
+		{"sensor home_nets", "192.0.2.1", nil, "8.8.8.8", "172.16.1.1", "downstream"},
+		{"sensor home_nets ignore listener", "192.0.2.1", nil, "10.1.1.1", "8.8.8.8", "upstream"},
+		{"observation home_nets", "192.0.2.2", &obs, "192.168.1.1", "8.8.8.8", "upstream"},
+		{"sensor without home_nets", "192.0.2.9", nil, "8.8.8.8", "10.1.1.1", "downstream"},
+		{"invalid sensor home_nets", "192.0.2.3", nil, "8.8.8.8", "10.1.1.1", "downstream"},
+	}
+	for _, tt := range tests {
+		rec := &JSONFlowRecord{LanIP: tt.lan, WanIP: tt.wan, ObservationDomainID: tt.obsID}
+		parser.homeCheckerFor(rec, tt.exporter).OrientFlow(rec)
+		if rec.Direction != tt.wantDir {
+			t.Errorf("%s: expected direction %q, got %q", tt.name, tt.wantDir, rec.Direction)
+		}
+	}
+
+	// the sensor 192.0.2.1 only knows 172.16.0.0/12, so 10.1.1.1 is external for it
+	rec := &JSONFlowRecord{LanIP: "10.1.1.1", WanIP: "172.16.1.1"}
+	parser.homeCheckerFor(rec, "192.0.2.1").OrientFlow(rec)
+	if rec.Direction != "downstream" || rec.LanIP != "172.16.1.1" {
+		t.Errorf("expected downstream with lan_ip 172.16.1.1, got %q with lan_ip %s", rec.Direction, rec.LanIP)
+	}
+}

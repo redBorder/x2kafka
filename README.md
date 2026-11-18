@@ -25,11 +25,12 @@ This repository provides two high-performance streaming daemons for the redBorde
   - **IPFIX / NetFlow v10 (RFC 7011 / 7012)**: Dynamic template decoding with variable-length elements and enterprise Information Elements (`type: "netflowv10"`).
   - **sFlow v5 (sFlow.org)**: Ingests Flow Samples (Format 1) and Expanded Flow Samples (Format 3) on UDP 6343 (`type: "sflow"`).
   - **100% Flat JSON Compatibility**: Drop-in replacement for `f2k` and `redborder-flow-agent`. Emits flat JSON records (no nested objects) for Druid/ClickHouse ingestion, with Cisco NBAR binary applications decoded into string `engine:app` identifiers (e.g. `"3:123"`).
-  - **RedBorder Directional Model A (`home_nets`)**: Evaluates traffic orientation against configured `home_nets` CIDR blocks (defaults to RFC 1918/6598/4193). For downstream flows (WAN $\to$ LAN), `lan_ip` is automatically oriented to the internal host, with `direction` set to `"upstream"`, `"downstream"`, or `"internal"`.
+  - **RedBorder Directional Model A (`home_nets`)**: Evaluates traffic orientation against configured `home_nets` CIDR blocks (defaults to RFC 1918/6598/4193). For downstream flows (WAN $\to$ LAN), `lan_ip` is automatically oriented to the internal host, with `direction` set to `"upstream"`, `"downstream"`, or `"internal"`. `home_nets` can be set globally, per listener or per sensor inside its `enrichment_map` entry (also inside an `observations_id` entry); the most specific one wins. Per sensor `home_nets` only orient the flows of that sensor and are not added to the events.
   - **L7 & Network Layer Metadata**: Decodes HTTP User-Agent (`http_user_agent`), URL (`http_url`), Host (`http_host`), Referer (`http_referer`), human-readable TCP flags (`tcp_flags`, e.g. `"SYN|ACK"`), and TTL (`src_ttl`, `dst_ttl`) from Cisco AVC/NBAR2, IPFIX, and sFlow.
   - **Output Schema & `sensor_ip`**: Emits normalized flow JSON with `sensor_ip` automatically populated with the exporter's IP address, alongside `lan_ip`, `wan_ip`, `lan_l4_port`, `wan_l4_port`, `l4_proto`, `bytes`, `pkts`, and timestamps.
   - **Sampling Renormalization (`renormalize_sampling`)**: Automatically scales byte and packet volumes by the flow sampling rate so downstream metrics reflect true wire volume.
   - **SPAN Port Mode (`span_port`)**: Configurable per-listener boolean. When enabled (`"span_port": true`), ingress MAC addresses are prioritized over post-routed gateway MACs (`postDestinationMacAddress`), matching mirrored SPAN port tap behavior.
+  - **sFlow Application Classification (`ndpi`)**: sFlow samples carry no application ID, so `application_id_name`, `application_id` and `engine_id_name` are derived from the sampled packet. With `"ndpi": true` (per listener, or global for every flow listener) each sample is classified with [nDPI](https://github.com/ntop/nDPI) and reported as the lower-case nDPI name with engine `13` (e.g. `"application_id_name": "youtube"`, `"application_id": "13:124"`). Because sFlow delivers isolated, truncated packets, x2kafka uses, in order: nDPI payload detection, a detection remembered for the same server IP/port (`ndpi_cache_ttl_seconds`, default 600), nDPI's guess by IP range or port, and finally the L4 port mapping from the applications dictionary (`applications_file`, engine `3`, e.g. `"3:443"`). The port mapping is always applied to sFlow when the dictionary is loaded, also with nDPI off. nDPI needs a binary built with the `ndpi` tag (`make rpm NDPI=1` links nDPI statically into the RPM; `x2kafka -version` shows it); otherwise `"ndpi": true` logs a warning and the port mapping is used.
   - **Observation ID Enrichment (`observation_domain_id` / `observations_id`)**: Extracts NetFlow v9 Source ID and IPFIX Observation Domain ID into `observation_domain_id`. Supports hierarchical enrichment lookup matching both flat `<ip>:<observation_id>` keys and nested Chef `observations_id` maps.
   - **Field Exclusion (`exclude_fields`)**: Allows dropping specified flow fields from the emitted JSON records before Kafka serialization.
 - **Native OpenTelemetry (OTLP) Receiver (`proto: "otlp"`, `"otlp_http"`, `"otlp_https"`, `"otlp_grpc"`)**:
@@ -158,12 +159,14 @@ This repository provides two high-performance streaming daemons for the redBorde
       "topic": "rb_flow",
       "home_nets": ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
       "renormalize_sampling": true,
+      "ndpi": true,
       "allowed_ips": ["10.0.0.0/8"],
       "enrichment_key": "sensor_ip",
       "enrichment_map": {
         "10.20.20.1": {
           "sensor_uuid": "e55fe2c3-d0ff-4c27-aef9-122b698239e5",
-          "sensor_name": "switch-core-01"
+          "sensor_name": "switch-core-01",
+          "home_nets": ["192.168.10.0/24"]
         }
       }
     },
@@ -519,6 +522,13 @@ Code linting and vetting:
 make lint
 ```
 
+`make build` produces a pure-Go `x2kafka` without nDPI. To build with nDPI (sFlow application classification) install libndpi >= 5.0 with its headers and use the `ndpi` tag:
+```bash
+CGO_ENABLED=1 go build -tags ndpi -o bin/x2kafka ./cmd/x2kafka
+CGO_ENABLED=1 go test -tags ndpi ./pkg/parser/flow
+bin/x2kafka -version   # prints "nDPI support: enabled (libndpi ...)"
+```
+
 ---
 
 ## Packaging (Separate RPMs)
@@ -531,6 +541,13 @@ Build packages using mock:
 ```bash
 make rpm
 ```
+
+By default the `x2kafka` RPM is built without nDPI. To build it with nDPI support (sFlow application classification):
+```bash
+make rpm NDPI=1                    # nDPI 6.0
+make rpm NDPI=1 NDPI_VERSION=4.14  # another nDPI release
+```
+`packaging/rpm/Makefile` then downloads the nDPI release tarball into `packaging/rpm/SOURCES` (override the location with `NDPI_URL`) and builds the spec `--with ndpi`, which compiles nDPI as a static library linked into the binary, so nodes need no `libndpi` package.
 
 ---
 

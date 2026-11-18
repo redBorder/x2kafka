@@ -121,3 +121,30 @@ func TestFormatPayloadWithParser(t *testing.T) {
 	}
 }
 
+
+func TestFormatPayloadSkipsSensorHomeNets(t *testing.T) {
+	d := NewDecoder()
+	cfg := config.ListenerConfig{
+		Mode:          "json",
+		EnrichmentKey: "sensor_ip",
+		EnrichmentMap: map[string]map[string]interface{}{
+			"10.0.0.1": {
+				"sensor_name": "sflow-sensor",
+				"home_nets":   []interface{}{"192.168.0.0/16"},
+			},
+		},
+	}
+
+	out, _, err := d.FormatPayloadWithConfigAndTopic([]byte(`{"sensor_ip":"10.0.0.1","bytes":10}`), cfg, "sflow", "10.0.0.1")
+	if err != nil {
+		t.Fatalf("FormatPayloadWithConfigAndTopic error: %v", err)
+	}
+	var doc map[string]interface{}
+	_ = json.Unmarshal(out, &doc)
+	if doc["sensor_name"] != "sflow-sensor" {
+		t.Errorf("expected sensor_name 'sflow-sensor', got '%v'", doc["sensor_name"])
+	}
+	if _, ok := doc["home_nets"]; ok {
+		t.Errorf("home_nets must not be added to the event: %v", doc)
+	}
+}

@@ -104,6 +104,15 @@ func (c *TemplateCache) GetAppName(exporterIP string, domainID uint32, appID uin
 	return "", false
 }
 
+// LookupDictionary resolves an application ID using only the static applications dictionary.
+func (c *TemplateCache) LookupDictionary(appID uint64) (string, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	name, ok := c.appDictionary[appID]
+	return name, ok && name != ""
+}
+
 // SetIfName stores a learned interface name for a given exporter, domain, and interface index.
 func (c *TemplateCache) SetIfName(exporterIP string, domainID uint32, ifIndex uint32, name string) {
 	c.mu.Lock()
