@@ -287,8 +287,8 @@ func applyFieldToRecord(rec *JSONFlowRecord, spec FieldSpec, val []byte, spanPor
 		case IE_VLAN_ID, IE_DOT1Q_VLAN_ID:
 			rec.LanVLAN = uint16(decodeUint(val))
 		case IE_HTTP_HOST_NAME_V9, IE_HTTP_HOST_NAME_IPFIX, IE_REDBORDER_WEBSITE_URL:
-			if isPrintableASCII(val) {
-				rec.Host = string(val)
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.Host = string(s)
 			}
 		case IE_APPLICATION_ID:
 			eng, app := decodeAppID(val)
@@ -324,8 +324,8 @@ func applyFieldToRecord(rec *JSONFlowRecord, spec FieldSpec, val []byte, spanPor
 				}
 			}
 		case IE_APPLICATION_NAME, IE_REDBORDER_APP_PROTOCOL:
-			if isPrintableASCII(val) {
-				rec.ApplicationName = strings.TrimRight(string(val), "\x00")
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.ApplicationName = string(s)
 			} else if len(val) == 4 {
 				eng, app := decodeAppID(val)
 				if eng != "" {
@@ -345,8 +345,8 @@ func applyFieldToRecord(rec *JSONFlowRecord, spec FieldSpec, val []byte, spanPor
 				rec.Duration = (rec.EndTime - rec.StartTime) * 1000
 			}
 		case IE_REDBORDER_SENSOR_NAME:
-			if isPrintableASCII(val) {
-				rec.SensorName = string(val)
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.SensorName = string(s)
 			}
 		}
 	} else {
@@ -381,16 +381,16 @@ func applyFieldToRecord(rec *JSONFlowRecord, spec FieldSpec, val []byte, spanPor
 
 		switch spec.TypeID {
 		case IE_REDBORDER_SENSOR_NAME:
-			if isPrintableASCII(val) {
-				rec.SensorName = string(val)
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.SensorName = string(s)
 			}
 		case IE_REDBORDER_WEBSITE_URL:
-			if isPrintableASCII(val) {
-				rec.Host = string(val)
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.Host = string(s)
 			}
 		case IE_REDBORDER_APP_PROTOCOL:
-			if isPrintableASCII(val) {
-				rec.ApplicationName = string(val)
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.ApplicationName = string(s)
 			}
 		}
 	}
