@@ -3,6 +3,8 @@ package flow
 import (
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -114,5 +116,89 @@ func TestNULPaddedStringFields(t *testing.T) {
 					r.Host, r.ApplicationName, r.SensorName, tt.host, tt.appName, tt.sensorName)
 			}
 		})
+	}
+}
+
+func TestApplicationIDNameAndJA4(t *testing.T) {
+	fields := []ipfixTestField{
+		{id: IE_SOURCE_IPV4_ADDRESS, value: []byte{10, 0, 0, 1}},
+		{id: IE_DESTINATION_IPV4_ADDRESS, value: []byte{1, 1, 1, 1}},
+		{id: IE_APPLICATION_ID, value: []byte{13, 0, 0, 91}}, // 13:91
+		{id: IE_APPLICATION_NAME, value: padded("TLS", 16)},
+		{id: IE_REDBORDER_JA4, value: padded("t13d1516h2_8daaf6152771_01460d37e2a8", 36)},
+		{id: IE_REDBORDER_OS_NAME, value: padded("Linux", 16)},
+		{id: IE_REDBORDER_TAG_NAME, value: padded("prod-dmz", 16)},
+		{id: IE_REDBORDER_TAG2_NAME, value: padded("west-coast", 16)},
+		{id: IE_REDBORDER_TCP_RTT, value: []byte{0, 0, 0, 15}},
+	}
+
+	p := NewFlowParser(&ParserConfig{})
+	recs, err := p.Parse(buildIPFIX(fields), "192.0.2.10")
+	if err != nil || len(recs) != 1 {
+		t.Fatalf("Parse: err=%v records=%d", err, len(recs))
+	}
+	r := recs[0]
+
+	if r.ApplicationName != "TLS" {
+		t.Errorf("expected ApplicationName 'TLS', got %q", r.ApplicationName)
+	}
+	if r.ApplicationIDName != "TLS" {
+		t.Errorf("expected ApplicationIDName 'TLS', got %q", r.ApplicationIDName)
+	}
+	if r.JA4 != "t13d1516h2_8daaf6152771_01460d37e2a8" {
+		t.Errorf("expected JA4 't13d1516h2_8daaf6152771_01460d37e2a8', got %q", r.JA4)
+	}
+	if r.TLSVersion != "TLS 1.3" {
+		t.Errorf("expected TLSVersion 'TLS 1.3', got %q", r.TLSVersion)
+	}
+	if r.OS != "Linux" {
+		t.Errorf("expected OS 'Linux', got %q", r.OS)
+	}
+	if r.Tag != "prod-dmz" {
+		t.Errorf("expected Tag 'prod-dmz', got %q", r.Tag)
+	}
+	if r.Tag2 != "west-coast" {
+		t.Errorf("expected Tag2 'west-coast', got %q", r.Tag2)
+	}
+	if r.TCPRTT != 15 {
+		t.Errorf("expected TCPRTT 15, got %d", r.TCPRTT)
+	}
+
+	// Also verify enterprise-scoped IE_REDBORDER_APP_PROTOCOL sets ApplicationIDName
+	entFields := []ipfixTestField{
+		{id: IE_SOURCE_IPV4_ADDRESS, value: []byte{10, 0, 0, 1}},
+		{id: IE_DESTINATION_IPV4_ADDRESS, value: []byte{1, 1, 1, 1}},
+		{id: IE_REDBORDER_APP_PROTOCOL, pen: testPEN, value: padded("HTTPS", 16)},
+	}
+	entRecs, err := p.Parse(buildIPFIX(entFields), "192.0.2.10")
+	if err != nil || len(entRecs) != 1 {
+		t.Fatalf("Parse enterprise: err=%v records=%d", err, len(entRecs))
+	}
+	if entRecs[0].ApplicationIDName != "HTTPS" || entRecs[0].ApplicationName != "HTTPS" {
+		t.Errorf("enterprise: expected ApplicationIDName and ApplicationName 'HTTPS', got idName=%q name=%q",
+			entRecs[0].ApplicationIDName, entRecs[0].ApplicationName)
+	}
+
+	// Verify JSON marshaling includes tls_version
+	rawJSON, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(rawJSON), `"tls_version":"TLS 1.3"`) {
+		t.Errorf("expected json to contain '\"tls_version\":\"TLS 1.3\"', got %s", string(rawJSON))
+	}
+
+	// Verify standard IE_HTTP_USER_AGENT_IPFIX (468) decoding
+	uaFields := []ipfixTestField{
+		{id: IE_SOURCE_IPV4_ADDRESS, value: []byte{10, 0, 0, 1}},
+		{id: IE_DESTINATION_IPV4_ADDRESS, value: []byte{1, 1, 1, 1}},
+		{id: IE_HTTP_USER_AGENT_IPFIX, value: []byte("Mozilla/5.0")},
+	}
+	uaRecs, err := p.Parse(buildIPFIX(uaFields), "192.0.2.10")
+	if err != nil || len(uaRecs) != 1 {
+		t.Fatalf("Parse ua: err=%v records=%d", err, len(uaRecs))
+	}
+	if uaRecs[0].HTTPUserAgent != "Mozilla/5.0" {
+		t.Errorf("expected HTTPUserAgent 'Mozilla/5.0', got %q", uaRecs[0].HTTPUserAgent)
 	}
 }

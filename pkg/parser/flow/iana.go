@@ -58,14 +58,41 @@ const (
 	IE_DOT1Q_VLAN_ID              = 243
 	IE_POST_DOT1Q_VLAN_ID         = 254
 	IE_HTTP_HOST_NAME_IPFIX       = 456
+	IE_HTTP_USER_AGENT_IPFIX      = 468
 
 	// RedBorder Custom / Enterprise Fields
-	IE_REDBORDER_IS_OPEN_PORT     = 301
-	IE_REDBORDER_TCP_RTT          = 302
-	IE_REDBORDER_WEBSITE_URL      = 303
-	IE_REDBORDER_APP_PROTOCOL     = 304
-	IE_REDBORDER_SENSOR_NAME      = 305
+	IE_REDBORDER_IS_OPEN_PORT = 301
+	IE_REDBORDER_TCP_RTT      = 302
+	IE_REDBORDER_WEBSITE_URL  = 303
+	IE_REDBORDER_APP_PROTOCOL = 304
+	IE_REDBORDER_SENSOR_NAME  = 305
+	IE_REDBORDER_TAG_NAME     = 306
+	IE_REDBORDER_TAG2_NAME    = 307
+	IE_REDBORDER_JA4          = 308
+	IE_REDBORDER_OS_NAME      = 309
 )
+
+func deriveTLSVersionFromJA4(ja4 string) string {
+	if len(ja4) < 3 {
+		return ""
+	}
+	switch ja4[1:3] {
+	case "13":
+		return "TLS 1.3"
+	case "12":
+		return "TLS 1.2"
+	case "11":
+		return "TLS 1.1"
+	case "10":
+		return "TLS 1.0"
+	case "s3":
+		return "SSL 3.0"
+	case "s2":
+		return "SSL 2.0"
+	default:
+		return ""
+	}
+}
 
 func decodeUint(b []byte) uint64 {
 	switch len(b) {
@@ -325,7 +352,9 @@ func applyFieldToRecord(rec *JSONFlowRecord, spec FieldSpec, val []byte, spanPor
 			}
 		case IE_APPLICATION_NAME, IE_REDBORDER_APP_PROTOCOL:
 			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
-				rec.ApplicationName = string(s)
+				name := string(s)
+				rec.ApplicationName = name
+				rec.ApplicationIDName = name
 			} else if len(val) == 4 {
 				eng, app := decodeAppID(val)
 				if eng != "" {
@@ -337,6 +366,31 @@ func applyFieldToRecord(rec *JSONFlowRecord, spec FieldSpec, val []byte, spanPor
 			}
 		case IE_REDBORDER_IS_OPEN_PORT:
 			rec.IsOpenPort = decodeUint(val) != 0
+		case IE_REDBORDER_TCP_RTT:
+			rec.TCPRTT = int64(decodeUint(val))
+		case IE_REDBORDER_TAG_NAME:
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.Tag = string(s)
+			}
+		case IE_REDBORDER_TAG2_NAME:
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.Tag2 = string(s)
+			}
+		case IE_REDBORDER_JA4:
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.JA4 = string(s)
+				if rec.TLSVersion == "" {
+					rec.TLSVersion = deriveTLSVersionFromJA4(rec.JA4)
+				}
+			}
+		case IE_REDBORDER_OS_NAME:
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.OS = string(s)
+			}
+		case IE_HTTP_USER_AGENT_IPFIX:
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.HTTPUserAgent = string(s)
+			}
 		case IE_FLOW_START_SECONDS:
 			rec.StartTime = int64(decodeUint(val))
 		case IE_FLOW_END_SECONDS:
@@ -384,13 +438,42 @@ func applyFieldToRecord(rec *JSONFlowRecord, spec FieldSpec, val []byte, spanPor
 			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
 				rec.SensorName = string(s)
 			}
-		case IE_REDBORDER_WEBSITE_URL:
+		case IE_REDBORDER_WEBSITE_URL, IE_HTTP_HOST_NAME_V9, IE_HTTP_HOST_NAME_IPFIX:
 			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
 				rec.Host = string(s)
 			}
-		case IE_REDBORDER_APP_PROTOCOL:
+		case IE_REDBORDER_APP_PROTOCOL, IE_APPLICATION_NAME:
 			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
-				rec.ApplicationName = string(s)
+				name := string(s)
+				rec.ApplicationName = name
+				rec.ApplicationIDName = name
+			}
+		case IE_REDBORDER_IS_OPEN_PORT:
+			rec.IsOpenPort = decodeUint(val) != 0
+		case IE_REDBORDER_TCP_RTT:
+			rec.TCPRTT = int64(decodeUint(val))
+		case IE_REDBORDER_TAG_NAME:
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.Tag = string(s)
+			}
+		case IE_REDBORDER_TAG2_NAME:
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.Tag2 = string(s)
+			}
+		case IE_REDBORDER_JA4:
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.JA4 = string(s)
+				if rec.TLSVersion == "" {
+					rec.TLSVersion = deriveTLSVersionFromJA4(rec.JA4)
+				}
+			}
+		case IE_REDBORDER_OS_NAME:
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.OS = string(s)
+			}
+		case IE_HTTP_USER_AGENT_IPFIX:
+			if s := bytes.TrimRight(val, "\x00"); isPrintableASCII(s) {
+				rec.HTTPUserAgent = string(s)
 			}
 		}
 	}
