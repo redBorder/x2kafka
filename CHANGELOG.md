@@ -1,6 +1,13 @@
 x2kafka CHANGELOG
 ===============
 
+## 2.0.1
+  - Nils Verschaeve
+    - [668d975] Bug #27307: Trim NUL padding before checking NetFlow/IPFIX string fields
+    - [4e74b13] Bug #27307: Add tests for NUL padded NetFlow/IPFIX string fields
+  - David Vanhoucke
+    - [4b067d4] Add redborder flow-agent information (ja4, tls_version, os)
+
 ## 1.1.0
 
   - David Vanhoucke

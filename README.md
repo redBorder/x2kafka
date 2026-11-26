@@ -271,6 +271,25 @@ This repository provides two high-performance streaming daemons for the redBorde
 ```
 *Note: `"type"` is automatically set to `"netflowv5"`, `"netflowv9"`, `"netflowv10"` (IPFIX), or `"sflow"` based on the incoming datagram. Model A automatically ensures `"lan_ip"` is the internal `home_nets` IP and sets `"direction"` to `"upstream"` or `"downstream"`. HTTP metadata (`http_user_agent`, `http_url`, `http_host`) is decoded from Cisco AVC/NBAR2 or sFlow payloads when present.*
 
+##### RedBorder & Extended IPFIX / NetFlow v9 Information Elements
+`x2kafka` supports extended and custom redBorder Information Elements sent via IPFIX (v10) and NetFlow v9 templates (both standard field IDs and enterprise-scoped PEN mappings):
+
+| Field ID / IE | Name | Wire Type / Length | Kafka JSON Key | Description |
+|:---|:---|:---|:---|:---|
+| **95** | `applicationId` | uint32 (4B) | `application_id` | Cisco NBAR format `(engineID << 24) \| appID` |
+| **96** | `applicationName` | string (16B) | `application_name`, `application_id_name` | Protocol name from nDPI (e.g. `"DNS"`, `"TLS"`, `"HTTP"`) |
+| **87** / **456** | `httpHostName` | string (32B) | `host` | Website domain / HTTP Host / TLS SNI |
+| **301** | `isOpenPort` | uint8 (1B) | `is_open_port` | `1` = server listening port, `0` = client ephemeral port |
+| **302** | `tcpRoundTripTime` | uint32 (4B) | `tcp_rtt` | TCP 3-way handshake RTT latency in milliseconds |
+| **303** | `websiteUrl` | string (32B) | `host` | RedBorder legacy website URL / domain |
+| **304** | `appProtocol` | string (16B) | `application_name`, `application_id_name` | RedBorder protocol name |
+| **305** | `sensorName` | string (16B) | `sensor_name` | Name of the capturing sensor |
+| **306** | `tagName` | string (16B) | `tag` | Primary sensor tag |
+| **307** | `tag2Name` | string (16B) | `tag2` | Secondary sensor tag |
+| **308** | `ja4Fingerprint` | string (36B) | `ja4`, `tls_version` | JA4 TLS client fingerprint (e.g. `t13d15...`); automatically derives `tls_version` (e.g. `"TLS 1.3"`) |
+| **309** | `osName` | string (16B) | `os` | Inferred client OS (e.g. `"Linux"`, `"Windows"`) |
+| **468** | `httpUserAgent` | string | `http_user_agent` | Standard IANA IPFIX HTTP User-Agent header (RFC 7231) |
+
 ##### Flow Enrichment Resolution Order
 When `enrichment_map` is configured on a flow listener:
 1. `<exporter_ip>:<observation_id>` (e.g. `"10.1.50.20:100"`)
